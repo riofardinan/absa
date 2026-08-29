@@ -10,7 +10,21 @@ EC6/NON_OPINION nonaktif karena skema memakai Neutral (sesuai kondisi di dokumen
 462.796 baris → 1.546 dibuang aturan → **415.480 unit unik** (hemat 9,9%).
 Menghasilkan `work.jsonl`, `members.json` (propagasi label balik ke reviewId), `ruled.jsonl`.
 
-### 1. PILOT dulu — 20 menit, jangan dilewati
+### 1a. JALUR IN-PROCESS (pakai ini kalau `vllm serve` gagal NVML)
+Tanpa HTTP server, tanpa subprocess, tanpa ZMQ — dan lebih cepat untuk job batch.
+
+    # cek panjang token dgn tokenizer ASLI dulu (tidak memuat model ke GPU)
+    python3 annotate_offline.py --tag qwen --model Qwen/Qwen2.5-7B-Instruct --check-tokens
+    # pilot
+    python3 annotate_offline.py --tag qwen --model Qwen/Qwen2.5-7B-Instruct --limit 2000
+    # produksi
+    python3 annotate_offline.py --tag qwen --model Qwen/Qwen2.5-7B-Instruct
+
+Flag darurat: `--enforce-eager` (matikan CUDA graph, untuk driver lama),
+`--no-prefix-caching` (model dgn sliding window), `--wave 500` (checkpoint lebih rapat).
+Output `ann_*.jsonl` identik formatnya dengan jalur server, jadi `agreement.py` sama saja.
+
+### 1b. PILOT via server — 20 menit, jangan dilewati
     export API_KEY=...
     python3 annotate.py --tag pilotA --base-url <URL> --model <MODEL> \
         --chunk 25 --concurrency 24 --limit 2000
