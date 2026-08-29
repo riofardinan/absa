@@ -114,7 +114,10 @@ tidak muat chunk-25 (butuh 4.460). Harus varian `-16K`.
 
 | Gejala | Tindakan |
 |---|---|
-| `NVML_SUCCESS assert` | `bash fix_nvml.sh` — langkah 4 vs 5 memisahkan penyebabnya |
+| `NVML_SUCCESS assert` | **MIG.** Caching allocator PyTorch 2.5 memanggil NVML yg gagal di MIG. Skrip sudah pakai `backend:cudaMallocAsync` |
+| `OutOfMemoryError` | MIG 7g.40gb hanya menyediakan ~24 GiB, bukan 39,39. Pakai model AWQ + `--gpu-util 0.60` |
+| `uncaptured free of a captured allocation` | cudaMallocAsync ✗ CUDA graph. Skrip sudah default `enforce_eager` |
+| `CUDA driver error: invalid argument` | MIG tidak mendukung CUDA VMM — jangan pakai `expandable_segments` |
 | OOM saat muat model | turunkan `--gpu-util` ke 0.85 |
 | crash aneh di driver lama | tambahkan `--enforce-eager` (matikan CUDA graph) |
 | `fail %` tinggi | turunkan `--chunk`; cek juga `--max-tokens` cukup (≥ chunk × 40) |

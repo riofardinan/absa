@@ -83,8 +83,10 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-prefix-caching", action="store_true",
                     help="pakai kalau model punya sliding window (vLLM 0.6.x menolak kombinasi itu)")
-    ap.add_argument("--enforce-eager", action="store_true",
-                    help="matikan CUDA graph — coba ini kalau driver lama bermasalah")
+    ap.add_argument("--cuda-graph", action="store_true",
+                    help="AKTIFKAN CUDA graph. Default OFF: cudaMallocAsync (wajib di MIG) "
+                         "tidak kompatibel dengan graph capture -> 'uncaptured free of a "
+                         "captured allocation' lalu CUDA error: invalid argument.")
     ap.add_argument("--check-tokens", action="store_true",
                     help="hanya ukur panjang token via tokenizer, tidak memuat model ke GPU")
     a = ap.parse_args()
@@ -110,7 +112,7 @@ def main():
               max_model_len=a.max_model_len,
               gpu_memory_utilization=a.gpu_util,
               enable_prefix_caching=not a.no_prefix_caching,
-              enforce_eager=a.enforce_eager,
+              enforce_eager=not a.cuda_graph,
               seed=a.seed, disable_log_stats=True)
     sp = SamplingParams(temperature=0, max_tokens=a.max_tokens)   # 1 pass -> greedy
 
