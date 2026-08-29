@@ -29,7 +29,7 @@ import argparse, json, os, time
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
 from prompt import build_batch
-from parsing import parse_chunk       # parser + validator bersama
+from parsing import parse_chunk, extract_json   # parser + validator bersama
 
 
 # ------------------------------------------------------------------ util
@@ -93,6 +93,8 @@ def main():
                     help="AKTIFKAN CUDA graph. Default OFF: cudaMallocAsync (wajib di MIG) "
                          "tidak kompatibel dengan graph capture -> 'uncaptured free of a "
                          "captured allocation' lalu CUDA error: invalid argument.")
+    ap.add_argument("--debug-fail", type=int, default=0,
+                    help="cetak N output yang GAGAL parse — diagnosis fail%% tinggi")
     ap.add_argument("--debug", type=int, default=0,
                     help="cetak N output mentah pertama — pakai kalau fail%% tinggi")
     ap.add_argument("--check-tokens", action="store_true",
@@ -141,15 +143,24 @@ def main():
         return tok.apply_chat_template([{"role": "user", "content": p}],
                                        tokenize=False, add_generation_prompt=True)
 
-    dbg = {"n": 0}
+    dbg = {"n": 0, "f": 0}
 
-    def gen(prompts):
+    def gen(prompts, sizes=None):
         outs = [o.outputs[0].text for o in llm.generate([wrap(p) for p in prompts],
                                                         sp, use_tqdm=False)]
         if a.debug and dbg["n"] < a.debug:
             for t in outs[:a.debug - dbg["n"]]:
                 dbg["n"] += 1
-                print(f"\n----- OUTPUT MENTAH #{dbg['n']} -----\n{t[:1500]}\n-----", flush=True)
+                print(f"\n----- OUTPUT MENTAH #{dbg['n']} ({len(t)} char) -----\n{t}\n-----",
+                      flush=True)
+        if a.debug_fail and sizes:                     # cetak hanya yang GAGAL parse
+            for t, n in zip(outs, sizes):
+                if dbg["f"] >= a.debug_fail: break
+                if parse_chunk(t, n) is None:
+                    dbg["f"] += 1
+                    got = len(extract_json(t) or [])
+                    print(f"\n----- GAGAL #{dbg['f']}: minta {n} objek, dapat {got}, "
+                          f"{len(t)} char -----\n{t[:4000]}\n-----", flush=True)
         return outs
 
     t0 = time.time(); nrep = nsplit = nfail = nunit = 0
@@ -160,7 +171,8 @@ def main():
         res = {}
 
         # --- lintasan 1 ---------------------------------------------------
-        outs = gen([build_batch([u["text"] for u in c]) for _, c in wave])
+        outs = gen([build_batch([u["text"] for u in c]) for _, c in wave],
+                   [len(c) for _, c in wave])
         redo = []
         for (idx, cu), txt in zip(wave, outs):
             p = parse_chunk(txt, len(cu))
@@ -170,7 +182,8 @@ def main():
         # --- lintasan 2: repair call (Wittlinger: "second LLM repair call") -
         if redo:
             nrep += len(redo)
-            outs = gen([build_batch([u["text"] for u in c]) for _, c in redo])
+            outs = gen([build_batch([u["text"] for u in c]) for _, c in redo],
+                       [len(c) for _, c in redo])
             still = []
             for (idx, cu), txt in zip(redo, outs):
                 p = parse_chunk(txt, len(cu))
@@ -181,7 +194,7 @@ def main():
             if still:
                 nsplit += len(still)
                 flat = [(idx, u) for idx, cu in still for u in cu]
-                outs = gen([build_batch([u["text"]]) for _, u in flat])
+                outs = gen([build_batch([u["text"]]) for _, u in flat], [1]*len(flat))
                 per = {}
                 for (idx, _u), txt in zip(flat, outs):
                     p = parse_chunk(txt, 1)
