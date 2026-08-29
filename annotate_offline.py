@@ -78,7 +78,7 @@ def main():
                     help="chunk per gelombang sebelum checkpoint (kecil = rugi lebih sedikit saat crash)")
     ap.add_argument("--max-model-len", type=int, default=8192)
     ap.add_argument("--max-tokens", type=int, default=2048)
-    ap.add_argument("--gpu-util", type=float, default=0.78)   # MIG+cudaMallocAsync butuh headroom
+    ap.add_argument("--gpu-util", type=float, default=0.60)   # MIG: usable ~24 GiB dari 39,39
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-prefix-caching", action="store_true",
