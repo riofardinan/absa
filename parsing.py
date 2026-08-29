@@ -4,17 +4,42 @@ from ontology import ASPECTS, POLARITIES, EXCLUSIONS
 
 VALID_A, VALID_P, VALID_E = set(ASPECTS), set(POLARITIES), set(EXCLUSIONS)
 
+def _scan_objects(t):
+    """Ambil setiap objek JSON top-level. Menangani array, JSON Lines, dan
+    output terpotong (objek terakhir yang tidak lengkap dibuang)."""
+    out, depth, start, instr, esc = [], 0, None, False, False
+    for i, ch in enumerate(t):
+        if instr:
+            if esc: esc = False
+            elif ch == "\\": esc = True
+            elif ch == '"': instr = False
+            continue
+        if ch == '"':
+            instr = True
+        elif ch == "{":
+            if depth == 0: start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    try: out.append(json.loads(t[start:i + 1]))
+                    except json.JSONDecodeError: pass
+                    start = None
+    return out
+
+
 def extract_json(txt):
     t = re.sub(r"^\s*```(?:json)?|```\s*$", "", txt.strip(), flags=re.M).strip()
-    for op, cl in (("[", "]"), ("{", "}")):
-        i, k = t.find(op), t.rfind(cl)
-        if i != -1 and k > i:
-            try:
-                v = json.loads(t[i:k + 1])
-                return v if isinstance(v, list) else [v]
-            except json.JSONDecodeError:
-                pass
-    return None
+    i, k = t.find("["), t.rfind("]")
+    if i != -1 and k > i:                       # array utuh: jalur cepat
+        try:
+            v = json.loads(t[i:k + 1])
+            if isinstance(v, list): return v
+        except json.JSONDecodeError:
+            pass
+    return _scan_objects(t)                     # JSONL / array rusak / terpotong
+
 
 def norm_item(obj):
     """Kembalikan (labels, exclusion) tervalidasi, atau None kalau tak terselamatkan."""

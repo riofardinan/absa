@@ -55,12 +55,12 @@ def check_tokens(a):
     sample = random.sample(chunks[:-1] or chunks, min(200, len(chunks)))
     lens = [len(tok(_wrap(build_batch([u["text"] for u in c]))).input_ids) for c in sample]
     lens.sort()
-    est_out = a.chunk * 40
+    est_out = a.max_tokens
     p50, p99, mx = lens[len(lens)//2], lens[int(len(lens)*.99)], lens[-1]
     print(f"model      : {a.model}")
     print(f"chunk      : {a.chunk}   (sampel {len(lens)} chunk)")
     print(f"input tok  : median {p50:,}  p99 {p99:,}  max {mx:,}")
-    print(f"output est : {est_out:,} tok  (~40 tok JSON per review)")
+    print(f"output est : {est_out:,} tok  (max-tokens; terukur ~100 tok/review)")
     print(f"TOTAL max  : {mx + est_out:,} tok   vs --max-model-len {a.max_model_len:,}")
     head = mx + est_out
     if head > a.max_model_len:
@@ -82,7 +82,8 @@ def main():
     ap.add_argument("--wave", type=int, default=1000,
                     help="chunk per gelombang sebelum checkpoint (kecil = rugi lebih sedikit saat crash)")
     ap.add_argument("--max-model-len", type=int, default=8192)
-    ap.add_argument("--max-tokens", type=int, default=2048)
+    ap.add_argument("--max-tokens", type=int, default=0,
+                    help="0 = otomatis: chunk x 130 + 300 (terukur ~100 tok/review)")
     ap.add_argument("--gpu-util", type=float, default=0.60)   # MIG: usable ~24 GiB dari 39,39
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
@@ -98,6 +99,9 @@ def main():
                     help="hanya ukur panjang token via tokenizer, tidak memuat model ke GPU")
     a = ap.parse_args()
     a.out = a.out or f"ann_{a.tag}.jsonl"
+
+    if not a.max_tokens:
+        a.max_tokens = a.chunk * 130 + 300
 
     if a.check_tokens:
         raise SystemExit(0 if check_tokens(a) else 1)
