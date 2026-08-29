@@ -17,7 +17,7 @@ gelombang prompt sekaligus sehingga menyusun batch-nya sendiri secara optimal.
 
 Aman diputus: jalankan ulang, chunk yang sudah tertulis dilewati.
 """
-import argparse, json, os, time
+import argparse, collections, json, os, time
 from datetime import datetime, timezone
 
 # HARUS diset SEBELUM torch diimpor (vllm mengimpor torch). Export di shell sering
@@ -27,7 +27,12 @@ from datetime import datetime, timezone
 # MIG (7g.40gb) memblokir sebagian API NVML dan CUDA VMM. Caching allocator
 # PyTorch 2.5 memanggil NVML -> "NVML_SUCCESS == r INTERNAL ASSERT FAILED".
 # cudaMallocAsync memakai allocator native CUDA, jalur NVML itu tidak disentuh.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+_alloc = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+if "cudaMallocAsync" not in _alloc:
+    if _alloc:
+        print(f"[alloc] menimpa PYTORCH_CUDA_ALLOC_CONF={_alloc!r} "
+              f"-> backend:cudaMallocAsync (wajib di MIG)")
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync"
 
 from ontology import PROMPT_VERSION
 from prompt import build_batch
@@ -152,6 +157,27 @@ def main():
                                        tokenize=False, add_generation_prompt=True)
 
     dbg = {"n": 0, "f": 0}
+    fmode = collections.Counter()
+
+    def classify(t, n):
+        """Kenapa chunk ini gagal? -> mode kegagalan."""
+        if not t.strip():                      return "kosong"
+        got = parse(t, n)
+        if got is not None:                    return None
+        lines = [l for l in t.strip().splitlines() if l.strip()]
+        import re as _re
+        ids = {int(m.group(1)) for l in lines
+               if (m := _re.match(r"^\s*(\d+)[\.\):]?\s", l))}
+        if a.format == "compact":
+            if not ids:                        return "tidak ada baris ber-nomor"
+            if len(ids) < n:                   return f"kurang baris ({len(ids)}/{n})"
+            if len(ids) > n:                   return f"kelebihan baris ({len(ids)}/{n})"
+            return "nomor lengkap tapi token tak dikenal"
+        objs = len(extract_json(t) or [])
+        if objs == 0:                          return "bukan JSON"
+        if objs < n:                           return f"kurang objek ({objs}/{n})"
+        if objs > n:                           return f"kelebihan objek ({objs}/{n})"
+        return "JSON lengkap tapi isi invalid"
 
     def gen(prompts, sizes=None):
         outs = [o.outputs[0].text for o in llm.generate([wrap(p) for p in prompts],
@@ -161,14 +187,15 @@ def main():
                 dbg["n"] += 1
                 print(f"\n----- OUTPUT MENTAH #{dbg['n']} ({len(t)} char) -----\n{t}\n-----",
                       flush=True)
-        if a.debug_fail and sizes:                     # cetak hanya yang GAGAL parse
+        if sizes:
             for t, n in zip(outs, sizes):
-                if dbg["f"] >= a.debug_fail: break
-                if parse(t, n) is None:
+                m = classify(t, n)
+                if m is None: continue
+                fmode[m] += 1
+                if a.debug_fail and dbg["f"] < a.debug_fail:
                     dbg["f"] += 1
-                    got = len(t.strip().splitlines())
-                    print(f"\n----- GAGAL #{dbg['f']}: minta {n} objek, dapat {got}, "
-                          f"{len(t)} char -----\n{t[:4000]}\n-----", flush=True)
+                    print(f"\n----- GAGAL #{dbg['f']} [{m}] minta {n}, {len(t)} char "
+                          f"-----\n{t[:3000]}\n-----", flush=True)
         return outs
 
     prov_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -241,6 +268,10 @@ def main():
 
     fh.close()
     el = (time.time() - t0) / 60
+    if fmode:
+        print("\n  MODE KEGAGALAN (semua lintasan):")
+        for m, c in fmode.most_common():
+            print(f"    {c:6,}  {m}")
     print(f"[{a.tag}] SELESAI {nunit:,} unit / {el:.1f} menit "
           f"({nunit/el/60:.1f} unit/dtk) | repair {nrep} split {nsplit} "
           f"fail {nfail} ({100*nfail/max(nunit,1):.2f}%)")

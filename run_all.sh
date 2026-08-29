@@ -2,12 +2,16 @@
 # Anotasi 3 model SEQUENTIAL di satu A100 40GB, jalur IN-PROCESS (tanpa server).
 # Tiap model dapat penuh 40GB -> KV cache maksimal -> throughput tertinggi.
 set -uo pipefail
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
+# JANGAN set PYTORCH_CUDA_ALLOC_CONF di sini. annotate_offline.py memakai
+# os.environ.setdefault, jadi export dari shell akan MENANG dan menimpa
+# backend:cudaMallocAsync yang wajib di MIG -> NVML_SUCCESS assert kembali.
+unset PYTORCH_CUDA_ALLOC_CONF
 
 CHUNK=${CHUNK:-25}
 GU=${GU:-0.60}          # MIG 7g.40gb: usable ~24 GiB, bukan 39,39
 MML=${MML:-8192}          # 8192 muat chunk 25-50; ukur ulang dgn --check-tokens bila diubah
 WAVE=${WAVE:-1000}
+CSV=${CSV:-../fintech_reviews_curated.csv}
 
 # tag|model_id   — WAJIB tiga keluarga pretraining berbeda
 # Semua AWQ INT4: MIG hanya menyediakan ~24 GiB, BF16 7B (14,2 GiB) menyisakan
@@ -30,6 +34,13 @@ for entry in "${MODELS[@]}"; do
     || { echo "  !! $TAG GAGAL — lanjut ke model berikutnya"; continue; }
 
   echo "[$(date +%H:%M:%S)] $TAG selesai -> $(wc -l < "ann_${TAG}.jsonl" 2>/dev/null || echo 0) baris"
+done
+
+echo "=============================================================="
+echo "[$(date +%H:%M:%S)] ekspor ke format spec (§9 + §10)"
+for entry in "${MODELS[@]}"; do
+  TAG="${entry%%|*}"
+  [ -s "ann_${TAG}.jsonl" ] && python3 export.py --tag "$TAG" --csv "$CSV"
 done
 
 echo "=============================================================="
