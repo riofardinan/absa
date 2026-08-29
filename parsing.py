@@ -51,7 +51,7 @@ def norm_item(obj):
             continue
         a = str(lb.get("aspect", "")).strip().upper()
         p = str(lb.get("polarity", "")).strip().upper()
-        if a in VALID_A and p in VALID_P and a not in seen:
+        if a in VALID_A and p in VALID_P | {"ABSTAIN"} and a not in seen:
             seen.add(a); labels.append({"aspect": a, "polarity": p})
     exc = obj.get("exclusion")
     exc = str(exc).strip().upper() if exc not in (None, "", "null", "NULL") else None
@@ -61,7 +61,7 @@ def norm_item(obj):
         exc = None                      # aturan: labels terisi -> exclusion null
     elif exc is None:
         return None                     # kosong tanpa alasan -> anggap gagal
-    return labels, exc
+    return labels, exc, []
 
 def parse_chunk(txt, size):
     arr = extract_json(txt)
@@ -75,3 +75,59 @@ def parse_chunk(txt, size):
         out.append(r)
     return out
 
+
+
+# ------------------------------------------------------ format ringkas (wire)
+from ontology import CODE_ASPECT, CODE_POLARITY, CODE_EXCLUSION, SPAM_FLAG
+
+_LINE = re.compile(r"^\s*(\d+)[\.\):]?\s+(.*?)\s*$")
+_PAIR = re.compile(r"^([A-Z]{3}):([PNUX])$")   # X = ABSTAIN (§5)
+_EXCL = re.compile(r"^-?([A-Z]{2})$")
+
+
+def parse_chunk_compact(txt, size):
+    """Parse '<n> ASP:POL ASP:POL' / '<n> -XX', kembalikan bentuk yg sama dgn
+    parse_chunk sehingga sisa pipeline tidak berubah."""
+    got = {}
+    for raw in txt.replace("```", "\n").split("\n"):
+        m = _LINE.match(raw)
+        if not m:
+            continue
+        i = int(m.group(1))
+        if not 1 <= i <= size or i in got:
+            continue
+        body = m.group(2).strip()
+        if not body:
+            continue
+        labels, seen, exc, bad, spam = [], set(), None, False, False
+        for t in body.split():
+            t = t.strip(",;").upper()
+            p = _PAIR.match(t)
+            if p and p.group(1) in CODE_ASPECT:
+                a = CODE_ASPECT[p.group(1)]
+                if a not in seen:
+                    seen.add(a)
+                    labels.append({"aspect": a, "polarity": CODE_POLARITY[p.group(2)]})
+                continue
+            if t in ("SP", "-SP"):          # flag, bukan exclusion (§7 EC7)
+                spam = True
+                continue
+            e = _EXCL.match(t)
+            if e and e.group(1) in CODE_EXCLUSION:
+                exc = CODE_EXCLUSION[e.group(1)]
+                continue
+            bad = True                      # token tak dikenal -> jangan tebak
+        if bad and not labels and exc is None:
+            continue
+        if labels:
+            exc = None                      # aturan: labels terisi -> exclusion null
+        elif exc is None:
+            if spam:
+                exc = "NO_SPECIFIC_ASPECT"  # SP sendirian: tetap bukan alasan buang
+            else:
+                continue
+        got[i] = (labels, exc, [SPAM_FLAG] if spam else [])
+
+    if len(got) != size:
+        return None
+    return [got[i] for i in range(1, size + 1)]

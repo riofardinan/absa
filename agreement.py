@@ -58,6 +58,11 @@ def main():
     print(f"slot keputusan   : {len(uids)*len(ASPECTS):,}\n")
 
     per_aspect = {a: {"cnt": collections.Counter(), "fk": []} for a in ASPECTS}
+    # §11 mewajibkan DUA agreement terpisah:
+    #   (a) DETEKSI aspek  : hadir vs tidak hadir  -> kualitas ACD
+    #   (b) PASANGAN       : aspek + sentimen      -> kualitas ACD+ACSA
+    det_score, det_fk = collections.Counter(), []
+    pair_on_detected = collections.Counter()   # polaritas, hanya saat deteksi bulat
     slot_score = collections.Counter()
     unit_tier, aspected = {}, 0
     fk_all, fk_asp = [], []
@@ -71,6 +76,15 @@ def main():
             c = collections.Counter(v[a] for v in vals)
             top = c.most_common(1)[0][1]           # 3 = bulat, 2 = mayoritas, 1 = beda semua
             slot_score[top] += 1
+
+            # (a) deteksi: ABSENT vs ADA, mengabaikan polaritas
+            d = collections.Counter("ABSENT" if v[a] == ABSENT else "PRESENT" for v in vals)
+            det_score[d.most_common(1)[0][1]] += 1
+            det_fk.append(dict(d))
+            # (b) polaritas, dihitung HANYA bila ketiganya sepakat aspek itu hadir
+            if d.get("PRESENT") == 3:
+                pc = collections.Counter(v[a] for v in vals)
+                pair_on_detected[pc.most_common(1)[0][1]] += 1
             per_aspect[a]["cnt"][top] += 1
             per_aspect[a]["fk"].append(dict(c))
             fk_all.append(dict(c))
@@ -88,7 +102,22 @@ def main():
     print(f"  Fleiss kappa  slot ber-aspek: {fleiss(fk_asp):.4f}   "
           f"(n={len(fk_asp):,}) <- angka yang jujur")
 
-    print("\n=== PER ASPEK ===")
+    print("\n=== (a) AGREEMENT DETEKSI ASPEK (ACD) — hadir vs tidak, abaikan polaritas ===")
+    dt = sum(det_score.values())
+    for sc, lab in ((3, "3/3 bulat   "), (2, "2/1 mayoritas"), (1, "1/1/1 beda   ")):
+        print(f"  {lab:16s} {det_score[sc]:9,}  {100*det_score[sc]/dt:6.2f}%")
+    print(f"  Fleiss kappa deteksi       : {fleiss(det_fk):.4f}")
+
+    print("\n=== (b) AGREEMENT POLARITAS pada aspek yang deteksinya BULAT (ACSA) ===")
+    pt = sum(pair_on_detected.values())
+    if pt:
+        for sc, lab in ((3, "3/3 bulat   "), (2, "2/1 mayoritas"), (1, "1/1/1 beda   ")):
+            print(f"  {lab:16s} {pair_on_detected[sc]:9,}  {100*pair_on_detected[sc]/pt:6.2f}%")
+        print(f"  (n={pt:,} slot; memisahkan error ACSA dari error ACD)")
+    else:
+        print("  (tidak ada slot dengan deteksi bulat)")
+
+    print("\n=== (c) PER ASPEK — pasangan aspek+sentimen ===")
     print(f"  {'aspek':30s} {'3/3':>8s} {'2/1':>8s} {'1/1/1':>7s} {'bulat%':>8s} {'kappa':>7s}")
     for a in ASPECTS:
         c = per_aspect[a]["cnt"]; t = sum(c.values())

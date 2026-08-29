@@ -81,3 +81,66 @@ BOUNDARIES = [
     "Fitur yang tidak tersedia/hilang -> FEATURE_FUNCTIONALITY. Fitur ada tapi errornya "
     "teknis -> APP_TECHNICAL_PERFORMANCE.",
 ]
+
+
+# --------------------------------------------------------------- kode ringkas
+# Format wire ringkas: waktu generasi didominasi token OUTPUT, dan nama panjang
+# seperti TRANSACTION_PERFORMANCE + boilerplate JSON memakan ~100 tok/review.
+# Sandi ini hanya dipakai di prompt & parsing; ann_*.jsonl tetap nama panjang.
+ASPECT_CODE = {
+    "SECURITY": "SEC",
+    "ACCOUNT_ACCESS_REGISTRATION": "ACC",
+    "FEATURE_FUNCTIONALITY": "FEA",
+    "UI_UX": "UIX",
+    "CUSTOMER_SERVICE": "CSV",
+    "FEES_CHARGES": "FEE",
+    "TRANSACTION_PERFORMANCE": "TRX",
+    "APP_TECHNICAL_PERFORMANCE": "APP",
+}
+CODE_ASPECT = {v: k for k, v in ASPECT_CODE.items()}
+
+POLARITY_CODE = {"POSITIVE": "P", "NEGATIVE": "N", "NEUTRAL": "U"}
+CODE_POLARITY = {v: k for k, v in POLARITY_CODE.items()}
+
+EXCLUSION_CODE = {
+    "OUT_OF_SCOPE": "OS",
+    "NO_SPECIFIC_ASPECT": "NS",
+    "OUT_OF_ONTOLOGY": "OO",
+    "INSUFFICIENT_CONTEXT": "IC",
+    "UNINTERPRETABLE": "UN",
+    "SPAM_FAKE": "SP",
+}
+CODE_EXCLUSION = {v: k for k, v in EXCLUSION_CODE.items()}
+
+
+# ---------------------------------------------------------------- ABSTAIN (§5)
+# "Jika aspect yang sama memiliki positive dan negative tanpa polarity yang jelas
+# dominan, gunakan ABSTAIN dengan reason POLARITY_CONFLICT_CASE; conflict bukan
+# kelas utama." -> ABSTAIN adalah nilai polaritas, bukan kelas sentimen.
+ABSTAIN = "ABSTAIN"
+ABSTAIN_REASON = "POLARITY_CONFLICT_CASE"
+POLARITY_CODE[ABSTAIN] = "X"
+CODE_POLARITY["X"] = ABSTAIN
+
+# SPAM (§7 EC7): TANPA detector tervalidasi, spam TIDAK BOLEH jadi exclusion.
+# Kode SP dari model diperlakukan sebagai FLAG, bukan alasan pembuangan.
+SPAM_FLAG = "SPAM_CANDIDATE"
+EXCLUSION_CODE.pop("SPAM_FAKE", None)
+CODE_EXCLUSION.pop("SP", None)
+EXCLUSIONS = [e for e in EXCLUSIONS if e != "SPAM_FAKE"]
+
+# Nama tampilan untuk output akhir (§9 memakai "Transaction Performance")
+ASPECT_DISPLAY = {
+    "SECURITY": "Security",
+    "ACCOUNT_ACCESS_REGISTRATION": "Account Access & Registration",
+    "FEATURE_FUNCTIONALITY": "Feature & Functionality",
+    "UI_UX": "UI / UX",
+    "CUSTOMER_SERVICE": "Customer Service",
+    "FEES_CHARGES": "Fees & Charges",
+    "TRANSACTION_PERFORMANCE": "Transaction Performance",
+    "APP_TECHNICAL_PERFORMANCE": "App / Technical Performance",
+}
+POLARITY_DISPLAY = {"POSITIVE": "Positive", "NEGATIVE": "Negative",
+                    "NEUTRAL": "Neutral", ABSTAIN: "Abstain"}
+
+PROMPT_VERSION = "absa_v1"

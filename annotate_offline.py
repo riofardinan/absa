@@ -18,6 +18,7 @@ gelombang prompt sekaligus sehingga menyusun batch-nya sendiri secara optimal.
 Aman diputus: jalankan ulang, chunk yang sudah tertulis dilewati.
 """
 import argparse, json, os, time
+from datetime import datetime, timezone
 
 # HARUS diset SEBELUM torch diimpor (vllm mengimpor torch). Export di shell sering
 # tidak berlaku kalau torch sudah terimpor lebih dulu di proses lain.
@@ -28,8 +29,9 @@ import argparse, json, os, time
 # cudaMallocAsync memakai allocator native CUDA, jalur NVML itu tidak disentuh.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
 
+from ontology import PROMPT_VERSION
 from prompt import build_batch
-from parsing import parse_chunk, extract_json   # parser + validator bersama
+from parsing import parse_chunk, parse_chunk_compact, extract_json
 
 
 # ------------------------------------------------------------------ util
@@ -93,6 +95,11 @@ def main():
                     help="AKTIFKAN CUDA graph. Default OFF: cudaMallocAsync (wajib di MIG) "
                          "tidak kompatibel dengan graph capture -> 'uncaptured free of a "
                          "captured allocation' lalu CUDA error: invalid argument.")
+    ap.add_argument("--provider", default="vllm-local",
+                    help="dicatat sbg provenance (§8): vllm-local, openai, dst.")
+    ap.add_argument("--format", choices=["compact", "json"], default="compact",
+                    help="compact = 1 baris/review, ~10x lebih sedikit token output. "
+                         "json dipertahankan untuk uji validasi format.")
     ap.add_argument("--debug-fail", type=int, default=0,
                     help="cetak N output yang GAGAL parse — diagnosis fail%% tinggi")
     ap.add_argument("--debug", type=int, default=0,
@@ -102,8 +109,9 @@ def main():
     a = ap.parse_args()
     a.out = a.out or f"ann_{a.tag}.jsonl"
 
+    parse = parse_chunk_compact if a.format == "compact" else parse_chunk
     if not a.max_tokens:
-        a.max_tokens = a.chunk * 130 + 300
+        a.max_tokens = (a.chunk * 25 + 200) if a.format == "compact" else (a.chunk * 130 + 300)
 
     if a.check_tokens:
         raise SystemExit(0 if check_tokens(a) else 1)
@@ -156,13 +164,14 @@ def main():
         if a.debug_fail and sizes:                     # cetak hanya yang GAGAL parse
             for t, n in zip(outs, sizes):
                 if dbg["f"] >= a.debug_fail: break
-                if parse_chunk(t, n) is None:
+                if parse(t, n) is None:
                     dbg["f"] += 1
-                    got = len(extract_json(t) or [])
+                    got = len(t.strip().splitlines())
                     print(f"\n----- GAGAL #{dbg['f']}: minta {n} objek, dapat {got}, "
                           f"{len(t)} char -----\n{t[:4000]}\n-----", flush=True)
         return outs
 
+    prov_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     t0 = time.time(); nrep = nsplit = nfail = nunit = 0
     fh = open(a.out, "a", encoding="utf-8")
 
@@ -175,7 +184,7 @@ def main():
                    [len(c) for _, c in wave])
         redo = []
         for (idx, cu), txt in zip(wave, outs):
-            p = parse_chunk(txt, len(cu))
+            p = parse(txt, len(cu))
             if p is None: redo.append((idx, cu))
             else: res[idx] = p
 
@@ -186,7 +195,7 @@ def main():
                        [len(c) for _, c in redo])
             still = []
             for (idx, cu), txt in zip(redo, outs):
-                p = parse_chunk(txt, len(cu))
+                p = parse(txt, len(cu))
                 if p is None: still.append((idx, cu))
                 else: res[idx] = p
 
@@ -197,20 +206,29 @@ def main():
                 outs = gen([build_batch([u["text"]]) for _, u in flat], [1]*len(flat))
                 per = {}
                 for (idx, _u), txt in zip(flat, outs):
-                    p = parse_chunk(txt, 1)
-                    per.setdefault(idx, []).append(p[0] if p else ([], "ERROR_PARSE"))
+                    p = parse(txt, 1)
+                    per.setdefault(idx, []).append(p[0] if p else ([], "ERROR_PARSE", []))
                 for idx, cu in still:
-                    res[idx] = per.get(idx, [([], "ERROR_PARSE")] * len(cu))
+                    res[idx] = per.get(idx, [([], "ERROR_PARSE", [])] * len(cu))
 
         # --- tulis + checkpoint -------------------------------------------
         lines = []
         for idx, cu in wave:
-            r = res.get(idx) or [([], "ERROR_PARSE")] * len(cu)   # jaring pengaman
-            for u, (labels, exc) in zip(cu, r):
-                if exc == "ERROR_PARSE": nfail += 1
-                lines.append(json.dumps({"uid": u["uid"], "chunk": idx, "model": a.tag,
-                                         "labels": labels, "exclusion": exc},
-                                        ensure_ascii=False))
+            r = res.get(idx) or [([], "ERROR_PARSE", [])] * len(cu)   # jaring pengaman
+            for u, (labels, exc, flags) in zip(cu, r):
+                bad = exc == "ERROR_PARSE"
+                nfail += bad
+                lines.append(json.dumps({
+                    "uid": u["uid"], "chunk": idx,
+                    "labels": labels, "exclusion": None if bad else exc,
+                    "flags": flags,
+                    # provenance (§8, §11)
+                    "method": "LLM", "provider": a.provider, "model_name": a.model,
+                    "model_tag": a.tag, "prompt_version": PROMPT_VERSION,
+                    "wire_format": a.format, "chunk_size": a.chunk,
+                    "temperature": 0, "parser_valid": not bad,
+                    "annotated_at": prov_ts,
+                }, ensure_ascii=False))
                 nunit += 1
         fh.write("\n".join(lines) + "\n"); fh.flush(); os.fsync(fh.fileno())
 

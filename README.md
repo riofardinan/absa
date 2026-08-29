@@ -78,7 +78,22 @@ dilewati (checkpoint dibaca dari `ann_*.jsonl` itu sendiri, di-`fsync` tiap gelo
 
 ---
 
-## LANGKAH 4 — agreement + antrian adjudikasi
+## LANGKAH 4 — ekspor ke format spec
+
+```bash
+python3 export.py --tag qwen --csv ../fintech_reviews_curated.csv
+```
+Menggabungkan `ann_qwen.jsonl` (per unit dedup) + `members.json` + CSV asli menjadi:
+- `annotations_qwen.jsonl` — skema spec **§9**, satu record per `review_id`, lengkap
+  dengan `app`, `text`, `eligible`, `status`, `annotations[{aspect,sentiment}]`,
+  `flags`, `method`, `provider`, `model_name`, `prompt_version`, `parser_valid`.
+  Record EXCLUDED/ABSTAIN/PARSE_ERROR tetap disimpan.
+- `long_qwen.csv` — format **§10**: `review_id | app | aspect | sentiment |
+  annotation_method | model_name | prompt_version`, satu baris per pasangan.
+
+---
+
+## LANGKAH 5 — agreement + antrian adjudikasi
 
 ```bash
 python3 agreement.py ann_qwen.jsonl ann_mistral.jsonl ann_yi.jsonl | tee agreement_report.txt
@@ -87,6 +102,10 @@ Skor per-SLOT (415.480 × 8 = **3.323.840 slot**, tiap slot 4-arah
 {ABSENT, POSITIVE, NEGATIVE, NEUTRAL}), mengikuti Wittlinger et al. yang menskor
 per-variabel, bukan per-dokumen. Exact-match tingkat review dengan 8 aspek akan
 menandai hampir semua review "disagree" dan angkanya tidak berguna.
+
+Melaporkan tiga metrik terpisah sesuai §11: (a) deteksi aspek (ACD), (b) polaritas
+pada aspek yang deteksinya bulat (ACSA), (c) per aspek. Plus raw agreement dan
+Fleiss kappa, termasuk kappa khusus slot ber-aspek.
 
 Menghasilkan:
 - `adjudicate_tier3_manusia.jsonl` — ada slot 1/1/1 (ketiga model beda). **Prioritas.**
@@ -148,4 +167,10 @@ tidak muat chunk-25 (butuh 4.460). Harus varian `-16K`.
   ekstrapolasi prevalence-adjusted. Tiru itu — mengadjudikasi seluruh Tier 3 dari
   415.480 unit tidak akan selesai.
 - **Sebutkan snapshot model, tanggal eksperimen, temperature 0, chunk size,
-  dan versi vLLM** agar reproducible.
+  dan versi vLLM** agar reproducible. Semuanya sudah tersimpan otomatis di tiap
+  record `ann_*.jsonl` (`provider`, `model_name`, `prompt_version`, `wire_format`,
+  `chunk_size`, `temperature`, `parser_valid`, `annotated_at`).
+- **ABSTAIN** dipakai bila aspek yang sama membawa evaluasi positif dan negatif tanpa
+  dominan, dengan reason `POLARITY_CONFLICT_CASE` (§5). Conflict bukan kelas sentimen.
+- **Spam tidak pernah jadi alasan pembuangan** tanpa detector tervalidasi (§7 EC7):
+  model boleh menandai `SP`, dan itu tersimpan sebagai flag `SPAM_CANDIDATE`.

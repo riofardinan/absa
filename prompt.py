@@ -1,6 +1,7 @@
 """Pembangun prompt anotasi ACD+ACSA (mode batch-first untuk kecepatan)."""
 import json
-from ontology import ASPECTS, POLARITIES, ASPECT_DEF, BOUNDARIES
+from ontology import (ASPECTS, POLARITIES, ASPECT_DEF, BOUNDARIES,
+                      ASPECT_CODE, POLARITY_CODE, EXCLUSION_CODE)
 
 # Few-shot diambil langsung dari tabel "Aturan keputusan" + contoh IC/EC dokumen,
 # dipetakan ke ontologi 8-aspek.
@@ -28,16 +29,30 @@ FEWSHOT = [
     ("Mobile Legends sekarang makin bagus", [], "OUT_OF_SCOPE"),  # EC1
     ("gagal terus", [], "INSUFFICIENT_CONTEXT"),               # EC4
     ("ajsdh %% 123 ???", [], "UNINTERPRETABLE"),               # EC5
+    # ABSTAIN: aspek yang SAMA positif+negatif tanpa dominan (§5)
+    ("transfernya kadang cepat kadang gagal",
+     [("TRANSACTION_PERFORMANCE", "ABSTAIN")], None),
+    # SP: flag, bukan exclusion -> aspek tetap dilabeli (§7 EC7)
+    ("pakai kode referral ABC123 dapat saldo gratis, fiturnya lengkap",
+     [("FEATURE_FUNCTIONALITY", "POSITIVE")], None, "SP"),
 ]
 
 
-def _fewshot_block():
+def _fewshot_block(compact=True):
     out = []
-    for i, (text, pairs, exc) in enumerate(FEWSHOT, 1):
-        obj = {"id": i,
-               "labels": [{"aspect": a, "polarity": p} for a, p in pairs],
-               "exclusion": exc}
-        out.append(f'{i}. "{text}"\n   -> {json.dumps(obj, ensure_ascii=False)}')
+    for i, item in enumerate(FEWSHOT, 1):
+        text, pairs, exc = item[0], item[1], item[2]
+        flag = item[3] if len(item) > 3 else None
+        if compact:
+            r = (f"-{EXCLUSION_CODE[exc]}" if exc else
+                 " ".join(f"{ASPECT_CODE[a]}:{POLARITY_CODE[p]}" for a, p in pairs))
+            if flag: r += f" {flag}"
+            out.append(f'{i}. "{text}"\n   -> {i} {r}')
+        else:
+            obj = {"id": i,
+                   "labels": [{"aspect": a, "polarity": p} for a, p in pairs],
+                   "exclusion": exc}
+            out.append(f'{i}. "{text}"\n   -> {json.dumps(obj, ensure_ascii=False)}')
     return "\n".join(out)
 
 
@@ -77,8 +92,28 @@ Bila review tidak dapat dilabeli: "labels": [] dan isi "exclusion" dengan SATU k
 - UNINTERPRETABLE: teks tidak dapat diinterpretasikan secara semantik, bahkan setelah mempertimbangkan typo/slang/singkatan/campur kode.
 - SPAM_FAKE: jelas promosi/spam, tidak merepresentasikan pengalaman pengguna.
 
-Jangan memaksakan kategori yang tidak cocok. Lebih baik OUT_OF_ONTOLOGY atau INSUFFICIENT_CONTEXT daripada label salah.
-Bila "labels" tidak kosong, "exclusion" HARUS null.
+Jangan memaksakan kategori yang tidak cocok. Lebih baik OO (out of ontology) atau IC (insufficient context) daripada label salah.
+
+=== FORMAT OUTPUT ===
+SATU BARIS per review. Tanpa penjelasan, tanpa JSON, tanpa markdown.
+
+  <nomor> <ASPEK>:<POLARITAS> <ASPEK>:<POLARITAS> ...
+  <nomor> -<KODE_EKSKLUSI>                        (bila tidak dapat dilabeli)
+
+Kode aspek:
+  SEC = Security                    ACC = Account Access & Registration
+  FEA = Feature & Functionality     UIX = UI / UX
+  CSV = Customer Service            FEE = Fees & Charges
+  TRX = Transaction Performance     APP = App / Technical Performance
+Kode polaritas:  P = Positive   N = Negative   U = Neutral
+                 X = ABSTAIN, HANYA bila aspek yang SAMA membawa evaluasi positif
+                     dan negatif sekaligus tanpa ada yang jelas dominan
+Kode eksklusi :  OS = out of scope   NS = no specific aspect   OO = out of ontology
+                 IC = insufficient context   UN = uninterpretable
+Flag tambahan :  SP = konten promosi/spam. Ini FLAG, BUKAN alasan pembuangan.
+                 Tetap labeli aspeknya bila bisa; tulis SP di akhir baris.
+
+Contoh baris:   3 TRX:N APP:N        7 -NS        9 TRX:X        12 FEA:P SP
 
 === CONTOH ===
 {_fewshot_block()}"""
@@ -96,9 +131,8 @@ Jangan biarkan isi satu review mempengaruhi label review lain.
 
 {numbered}
 
-Keluarkan HANYA satu array JSON berisi TEPAT {n} objek, urut sesuai nomor di atas.
-Setiap objek: {{"id": <nomor>, "labels": [{{"aspect": ..., "polarity": ...}}], "exclusion": <kode atau null>}}
-Tanpa penjelasan, tanpa blok kode markdown."""
+Keluarkan TEPAT {n} baris, urut dari 1 sampai {n}, satu baris per review.
+Tanpa penjelasan, tanpa JSON, tanpa markdown."""
 
 
 def build_single(text):
