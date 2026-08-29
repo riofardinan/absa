@@ -44,11 +44,16 @@ def check_tokens(a):
     """Ukur panjang prompt dengan tokenizer asli. Menjawab: muat di max_model_len?"""
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.model, trust_remote_code=True)
+    _tpl = getattr(tok, "chat_template", None) is not None
+    def _wrap(p):
+        return tok.apply_chat_template([{"role": "user", "content": p}],
+                                       tokenize=False, add_generation_prompt=True) if _tpl else p
+    print(f"chat tpl   : {'ADA (overhead sudah dihitung)' if _tpl else 'TIDAK ADA'}")
     units, chunks = load_chunks(a)
     import random
     random.seed(0)
     sample = random.sample(chunks[:-1] or chunks, min(200, len(chunks)))
-    lens = [len(tok(build_batch([u["text"] for u in c])).input_ids) for c in sample]
+    lens = [len(tok(_wrap(build_batch([u["text"] for u in c]))).input_ids) for c in sample]
     lens.sort()
     est_out = a.chunk * 40
     p50, p99, mx = lens[len(lens)//2], lens[int(len(lens)*.99)], lens[-1]
@@ -87,6 +92,8 @@ def main():
                     help="AKTIFKAN CUDA graph. Default OFF: cudaMallocAsync (wajib di MIG) "
                          "tidak kompatibel dengan graph capture -> 'uncaptured free of a "
                          "captured allocation' lalu CUDA error: invalid argument.")
+    ap.add_argument("--debug", type=int, default=0,
+                    help="cetak N output mentah pertama — pakai kalau fail%% tinggi")
     ap.add_argument("--check-tokens", action="store_true",
                     help="hanya ukur panjang token via tokenizer, tidak memuat model ke GPU")
     a = ap.parse_args()
@@ -116,8 +123,30 @@ def main():
               seed=a.seed, disable_log_stats=True)
     sp = SamplingParams(temperature=0, max_tokens=a.max_tokens)   # 1 pass -> greedy
 
+    # WAJIB: model *-Instruct butuh chat template (ChatML dsb). llm.generate() TIDAK
+    # menerapkannya otomatis -> tanpa ini model melanjutkan teks, bukan menjawab
+    # instruksi, dan hampir semua output gagal di-parse.
+    tok = llm.get_tokenizer()
+    has_tpl = getattr(tok, "chat_template", None) is not None
+    print(f"  chat template: {'ADA -> dipakai' if has_tpl else 'TIDAK ADA -> prompt mentah'}",
+          flush=True)
+
+    def wrap(p):
+        if not has_tpl:
+            return p
+        return tok.apply_chat_template([{"role": "user", "content": p}],
+                                       tokenize=False, add_generation_prompt=True)
+
+    dbg = {"n": 0}
+
     def gen(prompts):
-        return [o.outputs[0].text for o in llm.generate(prompts, sp, use_tqdm=False)]
+        outs = [o.outputs[0].text for o in llm.generate([wrap(p) for p in prompts],
+                                                        sp, use_tqdm=False)]
+        if a.debug and dbg["n"] < a.debug:
+            for t in outs[:a.debug - dbg["n"]]:
+                dbg["n"] += 1
+                print(f"\n----- OUTPUT MENTAH #{dbg['n']} -----\n{t[:1500]}\n-----", flush=True)
+        return outs
 
     t0 = time.time(); nrep = nsplit = nfail = nunit = 0
     fh = open(a.out, "a", encoding="utf-8")
