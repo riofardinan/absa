@@ -19,6 +19,15 @@ Aman diputus: jalankan ulang, chunk yang sudah tertulis dilewati.
 """
 import argparse, json, os, time
 
+# HARUS diset SEBELUM torch diimpor (vllm mengimpor torch). Export di shell sering
+# tidak berlaku kalau torch sudah terimpor lebih dulu di proses lain.
+# expandable_segments memakai VMM API + NVML -> pemicu NVML_SUCCESS assert di
+# driver/container yang NVML-nya terbatas.
+# MIG (7g.40gb) memblokir sebagian API NVML dan CUDA VMM. Caching allocator
+# PyTorch 2.5 memanggil NVML -> "NVML_SUCCESS == r INTERNAL ASSERT FAILED".
+# cudaMallocAsync memakai allocator native CUDA, jalur NVML itu tidak disentuh.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "backend:cudaMallocAsync")
+
 from prompt import build_batch
 from parsing import parse_chunk       # parser + validator bersama
 
@@ -69,7 +78,7 @@ def main():
                     help="chunk per gelombang sebelum checkpoint (kecil = rugi lebih sedikit saat crash)")
     ap.add_argument("--max-model-len", type=int, default=8192)
     ap.add_argument("--max-tokens", type=int, default=2048)
-    ap.add_argument("--gpu-util", type=float, default=0.92)
+    ap.add_argument("--gpu-util", type=float, default=0.78)   # MIG+cudaMallocAsync butuh headroom
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-prefix-caching", action="store_true",
