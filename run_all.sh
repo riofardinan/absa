@@ -9,7 +9,7 @@ unset PYTORCH_CUDA_ALLOC_CONF
 
 CHUNK=${CHUNK:-25}
 GU=${GU:-0.60}          # MIG 7g.40gb: usable ~24 GiB, bukan 39,39
-MML=${MML:-8192}          # 8192 muat chunk 25-50; ukur ulang dgn --check-tokens bila diubah
+MML=${MML:-4608}   # format ringkas butuh ~4.400 tok; 8192 memboroskan separuh KV cache
 WAVE=${WAVE:-1000}
 CSV=${CSV:-../fintech_reviews_curated.csv}
 

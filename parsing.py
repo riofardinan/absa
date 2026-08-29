@@ -78,16 +78,21 @@ def parse_chunk(txt, size):
 
 
 # ------------------------------------------------------ format ringkas (wire)
-from ontology import CODE_ASPECT, CODE_POLARITY, CODE_EXCLUSION, SPAM_FLAG
+from ontology import (CODE_ASPECT, CODE_POLARITY, CODE_EXCLUSION, SPAM_FLAG,
+                      ASPECTS, EXCLUSIONS)
 
 _LINE = re.compile(r"^\s*(\d+)[\.\):]?\s+(.*?)\s*$")
-_PAIR = re.compile(r"^([A-Z]{3}):([PNUX])$")   # X = ABSTAIN (§5)
-_EXCL = re.compile(r"^-?([A-Z]{2})$")
+_PAIR = re.compile(r"^([A-Z_]{2,32}):([PNUX])$")     # X = ABSTAIN (§5)
+_EXC  = re.compile(r"^-?([A-Z_]{2,24})$")
+# Model kadang memakai nama panjang (CUSTOMER_SERVICE:N) alih-alih sandi (CSV:N),
+# dan kadang menulis eksklusi tanpa tanda minus (IC, bukan -IC). Terima keduanya.
+_ASP_ANY = dict(CODE_ASPECT, **{a: a for a in ASPECTS})
+_EXC_ANY = dict(CODE_EXCLUSION, **{e: e for e in EXCLUSIONS})
 
 
-def parse_chunk_compact(txt, size):
-    """Parse '<n> ASP:POL ASP:POL' / '<n> -XX', kembalikan bentuk yg sama dgn
-    parse_chunk sehingga sisa pipeline tidak berubah."""
+def _compact_map(txt, size):
+    """Peta id -> (labels, exclusion, flags) untuk SETIAP baris yang valid.
+    Baris cacat dilewati, tidak membatalkan baris lain."""
     got = {}
     for raw in txt.replace("```", "\n").split("\n"):
         m = _LINE.match(raw)
@@ -103,31 +108,54 @@ def parse_chunk_compact(txt, size):
         for t in body.split():
             t = t.strip(",;").upper()
             p = _PAIR.match(t)
-            if p and p.group(1) in CODE_ASPECT:
-                a = CODE_ASPECT[p.group(1)]
+            if p and p.group(1) in _ASP_ANY:
+                a = _ASP_ANY[p.group(1)]
                 if a not in seen:
                     seen.add(a)
                     labels.append({"aspect": a, "polarity": CODE_POLARITY[p.group(2)]})
                 continue
-            if t in ("SP", "-SP"):          # flag, bukan exclusion (§7 EC7)
+            if t in ("SP", "-SP"):              # flag, bukan exclusion (§7 EC7)
                 spam = True
                 continue
-            e = _EXCL.match(t)
-            if e and e.group(1) in CODE_EXCLUSION:
-                exc = CODE_EXCLUSION[e.group(1)]
+            e = _EXC.match(t)
+            if e and e.group(1) in _EXC_ANY:
+                exc = _EXC_ANY[e.group(1)]
                 continue
-            bad = True                      # token tak dikenal -> jangan tebak
+            bad = True                          # token tak dikenal -> jangan tebak
         if bad and not labels and exc is None:
             continue
         if labels:
-            exc = None                      # aturan: labels terisi -> exclusion null
+            exc = None                          # aturan: labels terisi -> exclusion null
         elif exc is None:
             if spam:
-                exc = "NO_SPECIFIC_ASPECT"  # SP sendirian: tetap bukan alasan buang
+                exc = "NO_SPECIFIC_ASPECT"      # SP sendirian: tetap bukan alasan buang
             else:
                 continue
         got[i] = (labels, exc, [SPAM_FLAG] if spam else [])
+    return got
 
+
+def parse_chunk_compact(txt, size):
+    """All-or-nothing; dipakai saat butuh kepastian penuh."""
+    got = _compact_map(txt, size)
     if len(got) != size:
         return None
     return [got[i] for i in range(1, size + 1)]
+
+
+def parse_chunk_partial(txt, size, compact=True):
+    """TIDAK all-or-nothing: satu baris cacat di antara 25 baris bagus tidak
+    boleh membatalkan 25 unit. Kembalikan (hasil, id_yang_gagal); hasil[i] None
+    untuk yang gagal sehingga hanya unit itu yang perlu diulang."""
+    if compact:
+        got = _compact_map(txt, size)
+    else:
+        got = {}
+        for k, o in enumerate(extract_json(txt) or [], 1):
+            if k > size:
+                break
+            r = norm_item(o)
+            if r is not None:
+                got[k] = r
+    res = [got.get(i) for i in range(1, size + 1)]
+    return res, [i for i in range(1, size + 1) if got.get(i) is None]

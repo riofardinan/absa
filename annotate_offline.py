@@ -36,7 +36,8 @@ if "cudaMallocAsync" not in _alloc:
 
 from ontology import PROMPT_VERSION
 from prompt import build_batch
-from parsing import parse_chunk, parse_chunk_compact, extract_json
+from parsing import (parse_chunk, parse_chunk_compact, parse_chunk_partial,
+                     extract_json)
 
 
 # ------------------------------------------------------------------ util
@@ -88,7 +89,7 @@ def main():
     ap.add_argument("--chunk", type=int, default=25)
     ap.add_argument("--wave", type=int, default=1000,
                     help="chunk per gelombang sebelum checkpoint (kecil = rugi lebih sedikit saat crash)")
-    ap.add_argument("--max-model-len", type=int, default=8192)
+    ap.add_argument("--max-model-len", type=int, default=4608)
     ap.add_argument("--max-tokens", type=int, default=0,
                     help="0 = otomatis: chunk x 130 + 300 (terukur ~100 tok/review)")
     ap.add_argument("--gpu-util", type=float, default=0.60)   # MIG: usable ~24 GiB dari 39,39
@@ -206,37 +207,32 @@ def main():
         wave = todo[w0:w0 + a.wave]
         res = {}
 
-        # --- lintasan 1 ---------------------------------------------------
+        # --- lintasan 1: chunk penuh, hasil PARSIAL diterima -------------
         outs = gen([build_batch([u["text"] for u in c]) for _, c in wave],
                    [len(c) for _, c in wave])
-        redo = []
+        holes = []                       # (idx, posisi, unit) yang perlu diulang
         for (idx, cu), txt in zip(wave, outs):
-            p = parse(txt, len(cu))
-            if p is None: redo.append((idx, cu))
-            else: res[idx] = p
+            r, miss = parse_chunk_partial(txt, len(cu), a.format == "compact")
+            res[idx] = r
+            for m in miss:
+                holes.append((idx, m - 1, cu[m - 1]))
 
-        # --- lintasan 2: repair call (Wittlinger: "second LLM repair call") -
-        if redo:
-            nrep += len(redo)
-            outs = gen([build_batch([u["text"] for u in c]) for _, c in redo],
-                       [len(c) for _, c in redo])
-            still = []
-            for (idx, cu), txt in zip(redo, outs):
-                p = parse(txt, len(cu))
-                if p is None: still.append((idx, cu))
-                else: res[idx] = p
+        # --- lintasan 2: ulangi HANYA unit yang bolong, satuan --------------
+        # Mengganti kaskade lama "repair seluruh chunk -> split seluruh chunk":
+        # satu baris cacat dulu membatalkan 25 unit; kini hanya 1 yang diulang.
+        if holes:
+            nrep += len(holes)
+            outs = gen([build_batch([u["text"]]) for _, _, u in holes], [1] * len(holes))
+            for (idx, pos, _u), txt in zip(holes, outs):
+                one, _ = parse_chunk_partial(txt, 1, a.format == "compact")
+                res[idx][pos] = one[0]
 
-            # --- lintasan 3: pecah ke single ------------------------------
-            if still:
-                nsplit += len(still)
-                flat = [(idx, u) for idx, cu in still for u in cu]
-                outs = gen([build_batch([u["text"]]) for _, u in flat], [1]*len(flat))
-                per = {}
-                for (idx, _u), txt in zip(flat, outs):
-                    p = parse(txt, 1)
-                    per.setdefault(idx, []).append(p[0] if p else ([], "ERROR_PARSE", []))
-                for idx, cu in still:
-                    res[idx] = per.get(idx, [([], "ERROR_PARSE", [])] * len(cu))
+        # --- lintasan 3: masih kosong -> tandai ERROR_PARSE -----------------
+        for idx, cu in wave:
+            for k, v in enumerate(res[idx]):
+                if v is None:
+                    nsplit += 1
+                    res[idx][k] = ([], "ERROR_PARSE", [])
 
         # --- tulis + checkpoint -------------------------------------------
         lines = []
@@ -264,7 +260,7 @@ def main():
         print(f"  {d:,}/{len(todo):,} chunk | {nunit:,} unit | {el/60:5.1f} mnt "
               f"| ETA {(len(todo)-d)/(d/el)/60:6.1f} mnt "
               f"| {nunit/el:5.1f} unit/dtk "
-              f"| repair {nrep} split {nsplit} fail {nfail}", flush=True)
+              f"| retry {nrep} gagal-final {nsplit} fail {nfail}", flush=True)
 
     fh.close()
     el = (time.time() - t0) / 60
@@ -273,7 +269,7 @@ def main():
         for m, c in fmode.most_common():
             print(f"    {c:6,}  {m}")
     print(f"[{a.tag}] SELESAI {nunit:,} unit / {el:.1f} menit "
-          f"({nunit/el/60:.1f} unit/dtk) | repair {nrep} split {nsplit} "
+          f"({nunit/el/60:.1f} unit/dtk) | retry {nrep} gagal-final {nsplit} "
           f"fail {nfail} ({100*nfail/max(nunit,1):.2f}%)")
 
 
