@@ -1,69 +1,33 @@
 #!/usr/bin/env bash
-# Anotasi 3 model SEQUENTIAL di satu A100 40GB. Target: driver 525 / vLLM 0.6.6.
+# Anotasi 3 model SEQUENTIAL di satu A100 40GB, jalur IN-PROCESS (tanpa server).
 # Tiap model dapat penuh 40GB -> KV cache maksimal -> throughput tertinggi.
 set -uo pipefail
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:False
 
-PORT=8000
-BASE="http://localhost:${PORT}/v1"
-CHUNK=${CHUNK:-25}          # JANGAN naikkan tanpa membaca catatan sliding window di bawah
-CONC=${CONC:-64}
+CHUNK=${CHUNK:-25}
+MML=${MML:-8192}          # 8192 muat chunk 25-50; ukur ulang dgn --check-tokens bila diubah
+WAVE=${WAVE:-1000}
 
-# tag|model_id|flag_khusus   — WAJIB tiga keluarga pretraining berbeda
-#
-# Ketiganya TIDAK memakai sliding window (Qwen2.5 use_sliding_window=False;
-# Mistral-v0.2 dan Yi-1.5 tidak punya), jadi prefix caching jalan tanpa
-# --disable-sliding-window. Ketiganya juga TIDAK gated di HuggingFace.
+# tag|model_id   — WAJIB tiga keluarga pretraining berbeda
+# ctx: Qwen2.5 32k, Mistral-v0.2 32k, Yi-1.5-16K 16k.
+# JANGAN pakai 01-ai/Yi-1.5-9B-Chat biasa: konteksnya hanya 4.096, tidak muat chunk-25.
 MODELS=(
-  "qwen|Qwen/Qwen2.5-7B-Instruct|--enable-prefix-caching"
-  "mistral|mistralai/Mistral-7B-Instruct-v0.2|--enable-prefix-caching"
-  "yi|01-ai/Yi-1.5-9B-Chat|--enable-prefix-caching"
+  "qwen|Qwen/Qwen2.5-7B-Instruct"
+  "mistral|mistralai/Mistral-7B-Instruct-v0.2"
+  "yi|01-ai/Yi-1.5-9B-Chat-16K"
 )
 
-wait_ready() {           # tunggu server siap, maks 15 menit
-  for _ in $(seq 1 180); do
-    curl -sf "${BASE}/models" >/dev/null 2>&1 && return 0
-    kill -0 "$1" 2>/dev/null || return 1     # proses mati -> berhenti menunggu
-    sleep 5
-  done
-  return 1
-}
-
 for entry in "${MODELS[@]}"; do
-  IFS='|' read -r TAG MID XFLAGS <<< "$entry"
-  OUT="ann_${TAG}.jsonl"
-
+  IFS='|' read -r TAG MID <<< "$entry"
   echo "=============================================================="
   echo "[$(date +%H:%M:%S)] $TAG  <-  $MID"
-  echo "  flag: $XFLAGS"
 
-  # shellcheck disable=SC2086
-  vllm serve "$MID" \
-      --port "$PORT" \
-      --dtype bfloat16 \
-      --max-model-len 4096 \
-      --gpu-memory-utilization 0.92 \
-      $XFLAGS \
-      > "vllm_${TAG}.log" 2>&1 &
-  VPID=$!
+  python3 annotate_offline.py --tag "$TAG" --model "$MID" \
+      --chunk "$CHUNK" --max-model-len "$MML" --wave "$WAVE" \
+    || { echo "  !! $TAG GAGAL — lanjut ke model berikutnya"; continue; }
 
-  if ! wait_ready "$VPID"; then
-    echo "  !! server $TAG gagal siap. 20 baris terakhir log:"
-    tail -20 "vllm_${TAG}.log" | sed 's/^/     /'
-    kill $VPID 2>/dev/null; wait $VPID 2>/dev/null; continue
-  fi
-  echo "[$(date +%H:%M:%S)] server siap"
-
-  # probe dulu: 'output invalid' >5% -> turunkan CHUNK; throughput -> ETA sebenarnya
-  python3 probe.py --base-url "$BASE" --model "$MID" --chunk "$CHUNK" \
-          --concurrency 16 --calls 16 2>&1 | tee "probe_${TAG}.txt"
-
-  python3 annotate.py --tag "$TAG" --base-url "$BASE" --model "$MID" \
-          --chunk "$CHUNK" --concurrency "$CONC" --out "$OUT"
-
-  kill $VPID 2>/dev/null; wait $VPID 2>/dev/null
-  echo "[$(date +%H:%M:%S)] $TAG selesai -> $(wc -l < "$OUT" 2>/dev/null || echo 0) baris"
+  echo "[$(date +%H:%M:%S)] $TAG selesai -> $(wc -l < "ann_${TAG}.jsonl" 2>/dev/null || echo 0) baris"
 done
 
 echo "=============================================================="
-python3 agreement.py ann_qwen.jsonl ann_mistral.jsonl ann_yi.jsonl \
-        | tee agreement_report.txt
+python3 agreement.py ann_qwen.jsonl ann_mistral.jsonl ann_yi.jsonl | tee agreement_report.txt

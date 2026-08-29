@@ -20,7 +20,7 @@ Aman diputus: jalankan ulang, chunk yang sudah tertulis dilewati.
 import argparse, json, os, time
 
 from prompt import build_batch
-from annotate import parse_chunk          # parser + validator yang sama persis
+from parsing import parse_chunk       # parser + validator bersama
 
 
 # ------------------------------------------------------------------ util
@@ -67,7 +67,7 @@ def main():
     ap.add_argument("--chunk", type=int, default=25)
     ap.add_argument("--wave", type=int, default=1000,
                     help="chunk per gelombang sebelum checkpoint (kecil = rugi lebih sedikit saat crash)")
-    ap.add_argument("--max-model-len", type=int, default=4096)
+    ap.add_argument("--max-model-len", type=int, default=8192)
     ap.add_argument("--max-tokens", type=int, default=2048)
     ap.add_argument("--gpu-util", type=float, default=0.92)
     ap.add_argument("--limit", type=int, default=0)
