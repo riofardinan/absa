@@ -1,0 +1,26 @@
+# Hasil anotasi & turunannya — besar, dan semuanya dapat dibuat ulang.
+# GitHub menolak file >100MB; annotations_*.jsonl bisa 230MB+.
+hasil_khau/
+*.zip
+
+# Output langsung anotasi (mahal: jam GPU) — simpan DI LUAR repo atau pakai Git LFS
+ann_*.jsonl
+
+# Turunan: regenerasi dgn export.py / agreement.py dalam hitungan menit
+annotations_*.jsonl
+long_*.csv
+adjudicate_*.jsonl
+agreement_report.txt
+agreement_rtx.txt
+probe_*.txt
+vllm_*.log
+run*.log
+
+# Regenerasi dgn: python3 prepare.py ../fintech_reviews_curated.csv  (~40 detik)
+work.jsonl
+members.json
+ruled.jsonl
+
+__pycache__/
+*.pyc
+.venv/

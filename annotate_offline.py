@@ -27,12 +27,42 @@ from datetime import datetime, timezone
 # MIG (7g.40gb) memblokir sebagian API NVML dan CUDA VMM. Caching allocator
 # PyTorch 2.5 memanggil NVML -> "NVML_SUCCESS == r INTERNAL ASSERT FAILED".
 # cudaMallocAsync memakai allocator native CUDA, jalur NVML itu tidak disentuh.
-_alloc = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-if "cudaMallocAsync" not in _alloc:
-    if _alloc:
-        print(f"[alloc] menimpa PYTORCH_CUDA_ALLOC_CONF={_alloc!r} "
-              f"-> backend:cudaMallocAsync (wajib di MIG)")
+def _detect_gpu():
+    """Deteksi MIG + compute capability SEBELUM torch diimpor.
+
+    MIG (mis. A100 7g.40gb) memblokir sebagian API NVML sehingga caching
+    allocator PyTorch gagal -> harus backend:cudaMallocAsync, dan itu memaksa
+    enforce_eager. Di GPU normal keduanya justru merugikan.
+    """
+    import subprocess
+    info = {"mig": False, "cc": None, "name": "", "total_mib": None, "free_mib": None}
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,compute_cap,memory.total,memory.free,mig.mode.current",
+             "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=20).stdout.strip().split("\n")[0]
+        p = [x.strip() for x in out.split(",")]
+        info["name"] = p[0]
+        info["cc"] = float(p[1]) if len(p) > 1 and p[1][0].isdigit() else None
+        if len(p) > 2:
+            info["total_mib"] = int(p[2].split()[0])
+        if len(p) > 3:
+            info["free_mib"] = int(p[3].split()[0])
+        info["mig"] = len(p) > 4 and p[4].lower().startswith("enabled")
+    except Exception:
+        pass
+    # MIG juga terlihat dari nama device
+    if "MIG" in info["name"].upper():
+        info["mig"] = True
+    return info
+
+
+GPU = _detect_gpu()
+if GPU["mig"]:
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "backend:cudaMallocAsync"
+    print(f"[gpu] MIG terdeteksi -> cudaMallocAsync + enforce_eager (wajib)")
+else:
+    os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)   # caching allocator default
 
 from ontology import PROMPT_VERSION
 from prompt import build_batch
@@ -92,15 +122,19 @@ def main():
     ap.add_argument("--max-model-len", type=int, default=4608)
     ap.add_argument("--max-tokens", type=int, default=0,
                     help="0 = otomatis: chunk x 130 + 300 (terukur ~100 tok/review)")
-    ap.add_argument("--gpu-util", type=float, default=0.60)   # MIG: usable ~24 GiB dari 39,39
+    ap.add_argument("--gpu-util", type=float, default=0,
+                    help="0 = otomatis dari VRAM terdeteksi (sisakan ~1,4 GiB utk display+overhead)")
+    ap.add_argument("--kv-cache-dtype", default="auto",
+                    help="auto = fp8 bila compute capability >= 8.9 (Ada/Hopper/Blackwell). "
+                         "FP8 KV cache MELIPATGANDAKAN konkurensi pada kartu VRAM kecil.")
+    ap.add_argument("--max-num-seqs", type=int, default=0, help="0 = biarkan vLLM memutuskan")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-prefix-caching", action="store_true",
                     help="pakai kalau model punya sliding window (vLLM 0.6.x menolak kombinasi itu)")
-    ap.add_argument("--cuda-graph", action="store_true",
-                    help="AKTIFKAN CUDA graph. Default OFF: cudaMallocAsync (wajib di MIG) "
-                         "tidak kompatibel dengan graph capture -> 'uncaptured free of a "
-                         "captured allocation' lalu CUDA error: invalid argument.")
+    ap.add_argument("--force-eager", action="store_true",
+                    help="Matikan CUDA graph secara paksa. Otomatis aktif di MIG; "
+                         "di GPU normal hanya perlu bila graph capture bermasalah.")
     ap.add_argument("--provider", default="vllm-local",
                     help="dicatat sbg provenance (§8): vllm-local, openai, dst.")
     ap.add_argument("--format", choices=["compact", "json"], default="compact",
@@ -116,6 +150,18 @@ def main():
     a.out = a.out or f"ann_{a.tag}.jsonl"
 
     parse = parse_chunk_compact if a.format == "compact" else parse_chunk
+    # ---- setelan adaptif per-GPU -----------------------------------------
+    if not a.gpu_util:
+        # vLLM menghitung utilisasi terhadap memori TOTAL, jadi pakai yang BEBAS
+        # supaya display (RTX) atau proses lain (A100) otomatis diperhitungkan.
+        tm = GPU.get("total_mib") or 24000
+        fm = GPU.get("free_mib") or tm
+        a.gpu_util = round(max(0.40, min(0.92, (fm - 800) / tm)), 2)
+    fp8_ok = (GPU.get("cc") or 0) >= 8.9
+    if a.kv_cache_dtype == "auto" and fp8_ok:
+        a.kv_cache_dtype = "fp8"
+    eager = bool(GPU.get("mig"))          # CUDA graph hanya dimatikan bila MIG
+
     if not a.max_tokens:
         a.max_tokens = (a.chunk * 25 + 200) if a.format == "compact" else (a.chunk * 130 + 300)
 
@@ -135,12 +181,22 @@ def main():
         print("  sudah lengkap."); return
 
     from vllm import LLM, SamplingParams
-    llm = LLM(model=a.model, dtype="bfloat16",
+    print(f"  gpu: {GPU.get('name','?')} cc={GPU.get('cc')} "
+          f"vram={GPU.get('total_mib')}MiB (bebas {GPU.get('free_mib')}MiB) "
+          f"mig={GPU.get('mig')}", flush=True)
+    print(f"  setelan: gpu_util={a.gpu_util} kv_cache={a.kv_cache_dtype} "
+          f"cuda_graph={'OFF (MIG)' if eager else 'ON'} max_model_len={a.max_model_len}",
+          flush=True)
+    kw = dict(model=a.model, dtype="bfloat16",
               max_model_len=a.max_model_len,
               gpu_memory_utilization=a.gpu_util,
+              kv_cache_dtype=a.kv_cache_dtype,
               enable_prefix_caching=not a.no_prefix_caching,
-              enforce_eager=not a.cuda_graph,
+              enforce_eager=eager or a.force_eager,
               seed=a.seed, disable_log_stats=True)
+    if a.max_num_seqs:
+        kw["max_num_seqs"] = a.max_num_seqs
+    llm = LLM(**kw)
     sp = SamplingParams(temperature=0, max_tokens=a.max_tokens)   # 1 pass -> greedy
 
     # WAJIB: model *-Instruct butuh chat template (ChatML dsb). llm.generate() TIDAK

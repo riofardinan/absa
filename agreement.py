@@ -50,9 +50,12 @@ def main():
     if len(paths) < 3:
         sys.exit("butuh >=3 file anotasi (satu per model)")
     anns = [load(p) for p in paths]
-    tags = [p.replace("ann_", "").replace(".jsonl", "") for p in paths]
+    tags = [p.split("/")[-1].replace("ann_", "").replace(".jsonl", "") for p in paths]
+    N = len(anns)                       # jumlah rater; laporan menyesuaikan
+    MAJ = N // 2 + 1                    # ambang mayoritas jelas
     uids = sorted(set.intersection(*(set(a) for a in anns)))
     print(f"model            : {', '.join(tags)}")
+    print(f"rater            : {N}")
     print(f"unit beririsan   : {len(uids):,}  (per file: "
           f"{', '.join(f'{len(a):,}' for a in anns)})")
     print(f"slot keputusan   : {len(uids)*len(ASPECTS):,}\n")
@@ -71,7 +74,7 @@ def main():
         vals = [a[uid][0] for a in anns]
         has_aspect = any(v[x] != ABSENT for v in vals for x in ASPECTS)
         if has_aspect: aspected += 1
-        worst = 3
+        worst = N
         for a in ASPECTS:
             c = collections.Counter(v[a] for v in vals)
             top = c.most_common(1)[0][1]           # 3 = bulat, 2 = mayoritas, 1 = beda semua
@@ -82,7 +85,7 @@ def main():
             det_score[d.most_common(1)[0][1]] += 1
             det_fk.append(dict(d))
             # (b) polaritas, dihitung HANYA bila ketiganya sepakat aspek itu hadir
-            if d.get("PRESENT") == 3:
+            if d.get("PRESENT") == N:
                 pc = collections.Counter(v[a] for v in vals)
                 pair_on_detected[pc.most_common(1)[0][1]] += 1
             per_aspect[a]["cnt"][top] += 1
@@ -93,52 +96,68 @@ def main():
             worst = min(worst, top)
         unit_tier[uid] = worst
 
+    def _lab(sc):
+        if sc == N:   return f"{sc}/{N} bulat"
+        if sc >= MAJ: return f"{sc}-{N-sc} mayoritas"
+        if sc == 1:   return "semua beda"
+        return f"{sc}-... tanpa mayoritas"
+
     tot = sum(slot_score.values())
     print("=== DISTRIBUSI SKOR AGREEMENT PER-SLOT ===")
-    for s, lab in ((3, "3/3 bulat   "), (2, "2/1 mayoritas"), (1, "1/1/1 beda semua")):
-        print(f"  {lab:18s} {slot_score[s]:9,}  {100*slot_score[s]/tot:6.2f}%")
-    print(f"\n  raw agreement (bulat)      : {100*slot_score[3]/tot:.2f}%")
+    for sc in range(N, 0, -1):
+        lab = _lab(sc)
+        print(f"  {lab:20s} {slot_score[sc]:9,}  {100*slot_score[sc]/tot:6.2f}%")
+    print(f"\n  raw agreement (bulat)      : {100*slot_score[N]/tot:.2f}%")
     print(f"  Fleiss kappa  semua slot   : {fleiss(fk_all):.4f}")
     print(f"  Fleiss kappa  slot ber-aspek: {fleiss(fk_asp):.4f}   "
           f"(n={len(fk_asp):,}) <- angka yang jujur")
 
     print("\n=== (a) AGREEMENT DETEKSI ASPEK (ACD) — hadir vs tidak, abaikan polaritas ===")
     dt = sum(det_score.values())
-    for sc, lab in ((3, "3/3 bulat   "), (2, "2/1 mayoritas"), (1, "1/1/1 beda   ")):
-        print(f"  {lab:16s} {det_score[sc]:9,}  {100*det_score[sc]/dt:6.2f}%")
+    for sc in range(N, 0, -1):
+        lab = _lab(sc)
+        print(f"  {lab:20s} {det_score[sc]:9,}  {100*det_score[sc]/dt:6.2f}%")
     print(f"  Fleiss kappa deteksi       : {fleiss(det_fk):.4f}")
 
     print("\n=== (b) AGREEMENT POLARITAS pada aspek yang deteksinya BULAT (ACSA) ===")
     pt = sum(pair_on_detected.values())
     if pt:
-        for sc, lab in ((3, "3/3 bulat   "), (2, "2/1 mayoritas"), (1, "1/1/1 beda   ")):
-            print(f"  {lab:16s} {pair_on_detected[sc]:9,}  {100*pair_on_detected[sc]/pt:6.2f}%")
+        for sc in range(N, 0, -1):
+            lab = _lab(sc)
+            print(f"  {lab:20s} {pair_on_detected[sc]:9,}  {100*pair_on_detected[sc]/pt:6.2f}%")
         print(f"  (n={pt:,} slot; memisahkan error ACSA dari error ACD)")
     else:
         print("  (tidak ada slot dengan deteksi bulat)")
 
     print("\n=== (c) PER ASPEK — pasangan aspek+sentimen ===")
-    print(f"  {'aspek':30s} {'3/3':>8s} {'2/1':>8s} {'1/1/1':>7s} {'bulat%':>8s} {'kappa':>7s}")
+    print(f"  {'aspek':30s} {'bulat':>10s} {'mayoritas':>11s} {'tanpa maj.':>11s} "
+          f"{'bulat%':>8s} {'kappa':>7s}")
     for a in ASPECTS:
         c = per_aspect[a]["cnt"]; t = sum(c.values())
-        print(f"  {a:30s} {c[3]:8,} {c[2]:8,} {c[1]:7,} "
-              f"{100*c[3]/t:7.2f}% {fleiss(per_aspect[a]['fk']):7.4f}")
+        maj = sum(c[x] for x in range(MAJ, N))
+        nom = sum(c[x] for x in range(1, MAJ))
+        print(f"  {a:30s} {c[N]:10,} {maj:11,} {nom:11,} "
+              f"{100*c[N]/t:7.2f}% {fleiss(per_aspect[a]['fk']):7.4f}")
 
     tc = collections.Counter(unit_tier.values())
     print(f"\n=== ANTRIAN ADJUDIKASI (unit, bukan slot) ===")
     print(f"  unit ber-aspek (>=1 model)          : {aspected:,}")
-    print(f"  TIER 1  semua slot bulat  -> terima : {tc[3]:8,}  {100*tc[3]/len(uids):5.2f}%")
-    print(f"  TIER 2  ada slot 2/1      -> vote   : {tc[2]:8,}  {100*tc[2]/len(uids):5.2f}%")
-    print(f"  TIER 3  ada slot 1/1/1    -> MANUSIA: {tc[1]:8,}  {100*tc[1]/len(uids):5.2f}%")
+    t1 = tc[N]
+    t2 = sum(tc[x] for x in range(MAJ, N))
+    t3 = sum(tc[x] for x in range(1, MAJ))
+    print(f"  TIER 1  semua slot bulat      -> terima : {t1:8,}  {100*t1/len(uids):5.2f}%")
+    print(f"  TIER 2  mayoritas jelas       -> vote   : {t2:8,}  {100*t2/len(uids):5.2f}%")
+    print(f"  TIER 3  tanpa mayoritas jelas -> MANUSIA: {t3:8,}  {100*t3/len(uids):5.2f}%")
     for m in (0.5, 1, 3):
-        h = tc[1] * m / 60
+        h = t3 * m / 60
         print(f"      tier 3 @ {m:>3} mnt/unit : {h:8,.0f} jam = {h/8:6,.0f} hari kerja")
 
-    for tier, name in ((1, "tier3_manusia"), (2, "tier2_vote")):
+    for lo, hi, name in ((1, MAJ, "tier3_manusia"), (MAJ, N, "tier2_vote")):
         with open(f"adjudicate_{name}.jsonl", "w", encoding="utf-8") as f:
             for uid in uids:
-                if unit_tier[uid] != tier: continue
-                f.write(json.dumps({"uid": uid, "tier": tier, **{
+                if not (lo <= unit_tier[uid] < hi): continue
+                f.write(json.dumps({"uid": uid, "min_agreement": unit_tier[uid],
+                                    "n_raters": N, **{
                     t: {"labels": [{"aspect": k, "polarity": v}
                                    for k, v in anns[i][uid][0].items() if v != ABSENT],
                         "exclusion": anns[i][uid][1]}
