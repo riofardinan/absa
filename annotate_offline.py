@@ -127,7 +127,11 @@ def main():
     ap.add_argument("--kv-cache-dtype", default="auto",
                     help="auto = fp8 bila compute capability >= 8.9 (Ada/Hopper/Blackwell). "
                          "FP8 KV cache MELIPATGANDAKAN konkurensi pada kartu VRAM kecil.")
-    ap.add_argument("--max-num-seqs", type=int, default=0, help="0 = biarkan vLLM memutuskan")
+    ap.add_argument("--max-num-seqs", type=int, default=0,
+                    help="0 = otomatis. WAJIB dibatasi pada model hybrid-Mamba "
+                         "(Qwen3.5, Nemotron-H, Gemma-4): tiap sequence butuh satu blok "
+                         "Mamba cache, dan default 256 melebihi yang tersedia di GPU kecil "
+                         "-> 'max_num_seqs exceeds available Mamba cache blocks'.")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-prefix-caching", action="store_true",
@@ -157,6 +161,11 @@ def main():
         tm = GPU.get("total_mib") or 24000
         fm = GPU.get("free_mib") or tm
         a.gpu_util = round(max(0.40, min(0.92, (fm - 800) / tm)), 2)
+    if not a.max_num_seqs:
+        tm_ = GPU.get("total_mib") or 24000
+        # KV cache di kartu kecil hanya menyanggupi ~16-30 sequence pada 4608 token,
+        # jadi 64 sudah berlebih dan aman terhadap batas blok Mamba.
+        a.max_num_seqs = 64 if tm_ < 16000 else 256
     fp8_ok = (GPU.get("cc") or 0) >= 8.9
     if a.kv_cache_dtype == "auto" and fp8_ok:
         a.kv_cache_dtype = "fp8"
@@ -185,8 +194,8 @@ def main():
           f"vram={GPU.get('total_mib')}MiB (bebas {GPU.get('free_mib')}MiB) "
           f"mig={GPU.get('mig')}", flush=True)
     print(f"  setelan: gpu_util={a.gpu_util} kv_cache={a.kv_cache_dtype} "
-          f"cuda_graph={'OFF (MIG)' if eager else 'ON'} max_model_len={a.max_model_len}",
-          flush=True)
+          f"cuda_graph={'OFF (MIG)' if eager else 'ON'} max_model_len={a.max_model_len} "
+          f"max_num_seqs={a.max_num_seqs}", flush=True)
     kw = dict(model=a.model, dtype="bfloat16",
               max_model_len=a.max_model_len,
               gpu_memory_utilization=a.gpu_util,
@@ -194,8 +203,7 @@ def main():
               enable_prefix_caching=not a.no_prefix_caching,
               enforce_eager=eager or a.force_eager,
               seed=a.seed, disable_log_stats=True)
-    if a.max_num_seqs:
-        kw["max_num_seqs"] = a.max_num_seqs
+    kw["max_num_seqs"] = a.max_num_seqs
     llm = LLM(**kw)
     sp = SamplingParams(temperature=0, max_tokens=a.max_tokens)   # 1 pass -> greedy
 
