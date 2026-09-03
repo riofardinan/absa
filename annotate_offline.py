@@ -144,6 +144,10 @@ def main():
     ap.add_argument("--format", choices=["compact", "json"], default="compact",
                     help="compact = 1 baris/review, ~10x lebih sedikit token output. "
                          "json dipertahankan untuk uji validasi format.")
+    ap.add_argument("--thinking", action="store_true",
+                    help="biarkan thinking mode aktif (default: dimatikan)")
+    ap.add_argument("--abort-above", type=float, default=0.5,
+                    help="berhenti bila fail rate gelombang pertama melebihi ini (default 0.5)")
     ap.add_argument("--debug-fail", type=int, default=0,
                     help="cetak N output yang GAGAL parse — diagnosis fail%% tinggi")
     ap.add_argument("--debug", type=int, default=0,
@@ -215,11 +219,26 @@ def main():
     print(f"  chat template: {'ADA -> dipakai' if has_tpl else 'TIDAK ADA -> prompt mentah'}",
           flush=True)
 
+    # Model reasoning (Qwen3/3.5 dsb) MENGAKTIFKAN thinking mode dari chat template-nya.
+    # Akibatnya seluruh max_tokens habis untuk penalaran dan jawaban tak pernah muncul
+    # -> 100% gagal parse. Matikan bila template mendukung.
+    _think_off = False
+    if has_tpl and not a.thinking:
+        try:
+            tok.apply_chat_template([{"role": "user", "content": "x"}], tokenize=False,
+                                    add_generation_prompt=True, enable_thinking=False)
+            _think_off = True
+        except TypeError:
+            pass
+    print(f"  thinking mode: {'DIMATIKAN' if _think_off else ('AKTIF (diminta)' if a.thinking else 'template tidak punya opsi')}",
+          flush=True)
+
     def wrap(p):
         if not has_tpl:
             return p
+        kw = {"enable_thinking": False} if _think_off else {}
         return tok.apply_chat_template([{"role": "user", "content": p}],
-                                       tokenize=False, add_generation_prompt=True)
+                                       tokenize=False, add_generation_prompt=True, **kw)
 
     dbg = {"n": 0, "f": 0}
     fmode = collections.Counter()
@@ -318,6 +337,14 @@ def main():
                 }, ensure_ascii=False))
                 nunit += 1
         fh.write("\n".join(lines) + "\n"); fh.flush(); os.fsync(fh.fileno())
+
+        if w0 == 0 and nunit and nfail / nunit > a.abort_above:
+            print(f"\n!! BERHENTI: {100*nfail/nunit:.1f}% gagal parse di gelombang pertama "
+                  f"(ambang {100*a.abort_above:.0f}%).\n"
+                  f"   Jalankan ulang dgn --debug 2 untuk melihat output mentah model.\n"
+                  f"   Penyebab tersering: thinking mode aktif, max-tokens kurang, "
+                  f"atau chat template salah.", flush=True)
+            fh.close(); raise SystemExit(2)
 
         el = time.time() - t0
         d = min(w0 + a.wave, len(todo))
