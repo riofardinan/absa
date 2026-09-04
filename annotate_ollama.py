@@ -21,6 +21,13 @@ from parsing import parse_chunk, parse_chunk_compact, parse_chunk_partial
 _lk = threading.Lock()
 
 
+def api_get(url, body=None):
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"})
+    return urllib.request.urlopen(req, timeout=30)
+
+
 def call(prompt, a):
     """Ollama native /api/chat — OpenAI-compat endpoint tidak menerima num_ctx."""
     body = {
@@ -83,6 +90,9 @@ def main():
     ap.add_argument("--num-ctx", type=int, default=6144)
     ap.add_argument("--max-tokens", type=int, default=0, help="0 = chunk*25+200")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--shuffle-seed", type=int, default=42,
+                    help="acak deterministik urutan unit sebelum chunking "
+                         "(-1 = tanpa acak). Seed SAMA untuk semua model.")
     ap.add_argument("--keep-alive", default="30m")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--max-retries", type=int, default=4)
@@ -100,6 +110,13 @@ def main():
     compact = a.format == "compact"
 
     units = [json.loads(l) for l in open(a.work, encoding="utf-8")]
+    # work.jsonl mewarisi urutan CSV (DANA -> GoPay -> OVO -> ShopeePay), sehingga
+    # tiap chunk berisi 25 review dari APP YANG SAMA. Dengan multi-item prompting
+    # itu confound: bias per-app diterapkan ke blok kontigu. Acak DETERMINISTIK
+    # (seed tetap) memutus korelasinya tanpa mengorbankan reproduktibilitas.
+    if a.shuffle_seed >= 0:
+        import random as _rnd
+        _rnd.Random(a.shuffle_seed).shuffle(units)
     if a.limit:
         units = units[:a.limit]
     chunks = [units[i:i + a.chunk] for i in range(0, len(units), a.chunk)]
@@ -118,6 +135,22 @@ def main():
           flush=True)
     if not todo:
         print("  sudah lengkap."); return
+
+    # Tag Ollama (mis. "qwen3.5:4b") dapat diperbarui tanpa ganti nama. Digest
+    # mengunci bobot persis yang dipakai -- syarat reproduktibilitas di paper.
+    digest = ollama_ver = None
+    try:
+        d = json.load(api_get(a.host + "/api/show", {"model": a.model}))
+        digest = (d.get("details") or {}).get("digest") or d.get("digest")
+        if not digest:
+            for m in json.load(api_get(a.host + "/api/tags")).get("models", []):
+                if m.get("name") == a.model or m.get("model") == a.model:
+                    digest = m.get("digest"); break
+        ollama_ver = json.load(api_get(a.host + "/api/version")).get("version")
+    except Exception as e:
+        print(f"  (peringatan: digest/versi tidak terbaca: {type(e).__name__})")
+    print(f"  provenance: ollama v{ollama_ver} | digest {str(digest)[:20]} | "
+          f"shuffle_seed={a.shuffle_seed}", flush=True)
 
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
     t0 = time.time(); st = {"unit": 0, "retry": 0, "fail": 0, "dbg": 0}
@@ -166,6 +199,8 @@ def main():
                     "repeat_penalty": 1.0, "seed": a.seed,
                     "num_ctx": a.num_ctx, "num_predict": a.max_tokens,
                     "think": a.thinking,
+                    "model_digest": digest, "ollama_version": ollama_ver,
+                    "shuffle_seed": a.shuffle_seed,
                     "parser_valid": not bad, "annotated_at": ts,
                 }, ensure_ascii=False))
                 st["unit"] += 1

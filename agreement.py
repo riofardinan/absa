@@ -28,7 +28,7 @@ def load(path):
         for lb in r.get("labels") or []:
             if lb["aspect"] in slot:
                 slot[lb["aspect"]] = lb["polarity"]
-        d[r["uid"]] = (slot, r.get("exclusion"))
+        d[r["uid"]] = (slot, r.get("exclusion"), r.get("parser_valid", True))
     return d
 
 
@@ -53,9 +53,17 @@ def main():
     tags = [p.split("/")[-1].replace("ann_", "").replace(".jsonl", "") for p in paths]
     N = len(anns)                       # jumlah rater; laporan menyesuaikan
     MAJ = N // 2 + 1                    # ambang mayoritas jelas
-    uids = sorted(set.intersection(*(set(a) for a in anns)))
+    uids_all = sorted(set.intersection(*(set(a) for a in anns)))
+    # PARSE_ERROR punya labels=[] yang tak terbedakan dari "tidak ada aspek".
+    # Menghitungnya sebagai ABSENT akan MEMALSUKAN agreement: kegagalan teknis
+    # satu model terhitung sebagai kesepakatan. Unit semacam itu dikeluarkan.
+    uids = [u for u in uids_all if all(a[u][2] for a in anns)]
+    n_drop = len(uids_all) - len(uids)
     print(f"model            : {', '.join(tags)}")
     print(f"rater            : {N}")
+    if n_drop:
+        print(f"dibuang (PARSE_ERROR pada >=1 model): {n_drop:,} unit "
+              f"({100*n_drop/len(uids_all):.2f}%) -- tidak boleh dihitung sebagai ABSENT")
     print(f"unit beririsan   : {len(uids):,}  (per file: "
           f"{', '.join(f'{len(a):,}' for a in anns)})")
     print(f"slot keputusan   : {len(uids)*len(ASPECTS):,}\n")

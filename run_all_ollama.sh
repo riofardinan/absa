@@ -62,6 +62,17 @@ else
   for e in "${MODELS[@]}"; do
     TAG="${e%%|*}"; [ -s "ann_${TAG}.jsonl" ] && "$PY" export.py --tag "$TAG" --csv "$CSV"
   done
-  echo "### Ganti daftar di bawah dengan 3 model yang kamu pilih dari pilot:"
-  "$PY" agreement.py ann_qwen35.jsonl ann_gemma4.jsonl ann_phi4.jsonl | tee agreement_ollama.txt
+  ARGS=""; for e in "${MODELS[@]}"; do
+    T="${e%%|*}"; [ -s "ann_${T}.jsonl" ] && ARGS="$ARGS ann_${T}.jsonl"
+  done
+  echo "### AGREEMENT 5 MODEL (ganjil -> tidak ada seri 2-2)"
+  # shellcheck disable=SC2086
+  "$PY" agreement.py $ARGS | tee agreement_5model.txt
+  echo
+  echo "### PERBANDINGAN KUALITAS"
+  # shellcheck disable=SC2086
+  "$PY" compare_models.py $ARGS | tee compare_5model.txt
+  echo
+  echo "Subset 3 model bisa dihitung kapan saja tanpa anotasi ulang, mis.:"
+  echo "  $PY agreement.py ann_qwen35.jsonl ann_gemma4.jsonl ann_granite4.jsonl"
 fi
