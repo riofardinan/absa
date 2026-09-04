@@ -27,7 +27,7 @@ MODELS=(
 )
 
 if [ "${1:-}" = "--pull" ]; then
-  for e in "${MODELS[@]}"; do echo "== ${e#*|}"; ollama pull "${e#*|}"; done; exit 0
+  python3 ollama_pull.py --host "$HOST" $(for e in "${MODELS[@]}"; do printf "%s " "${e#*|}"; done); exit 0
 fi
 LIMIT=""; [ "${1:-}" = "--pilot" ] && LIMIT="--limit 500 --wave 20"
 
