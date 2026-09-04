@@ -1,7 +1,6 @@
 """Pembangun prompt anotasi ACD+ACSA (mode batch-first untuk kecepatan)."""
 import json
 from ontology import (ASPECTS, POLARITIES, ASPECT_DEF, BOUNDARIES,
-                      ASPECT_DEF_EN, BOUNDARIES_EN,
                       ASPECT_CODE, POLARITY_CODE, EXCLUSION_CODE)
 
 # Few-shot diambil langsung dari tabel "Aturan keputusan" + contoh IC/EC dokumen,
@@ -58,82 +57,65 @@ def _fewshot_block(compact=True):
 
 
 def _rules():
-    """English instructions over Indonesian data.
+    asp = "\n".join(f"- {a}: {ASPECT_DEF[a]}" for a in ASPECTS)
+    bnd = "\n".join(f"- {b}" for b in BOUNDARIES)
+    return f"""Kamu adalah anotator Aspect-Based Sentiment Analysis untuk ulasan aplikasi dompet digital (e-wallet) Indonesia: DANA, GoPay, OVO, ShopeePay.
 
-    Rationale (documented for the paper): Hellwig et al. (ESWA 2024;
-    LREC 2026) prompt in English for ABSA regardless of target-language data,
-    and English-instruction / target-language-data is standard practice for
-    multilingual LLM annotation. Label codes stay language-neutral; only the
-    review text and the few-shot examples are Indonesian.
-    """
-    asp = "\n".join(f"- {a}: {ASPECT_DEF_EN[a]}" for a in ASPECTS)
-    bnd = "\n".join(f"- {b}" for b in BOUNDARIES_EN)
-    return f"""You are an Aspect-Based Sentiment Analysis annotator for Indonesian \
-e-wallet application reviews (DANA, GoPay, OVO, ShopeePay).
+Tugas: Aspect Category Detection (ACD) + Aspect Category Sentiment Analysis (ACSA).
+Untuk setiap review, tentukan kategori aspek mana saja yang dibahas, dan polaritas sentimen terhadap MASING-MASING aspek itu.
 
-Task: Aspect Category Detection (ACD) + Aspect Category Sentiment Analysis (ACSA).
-For each review, identify which aspect categories are discussed and the sentiment \
-polarity toward EACH of them. The reviews are written in Indonesian, often informal, \
-with typos, abbreviations, slang and code-mixing. Output codes are language-neutral.
-
-=== THE 8 ASPECT CATEGORIES ===
+=== 8 KATEGORI ASPEK ===
 {asp}
 
-=== SENTIMENT POLARITY ===
-- POSITIVE: the user praises or is satisfied with that aspect.
-- NEGATIVE: the user complains about or is dissatisfied with that aspect.
-- NEUTRAL: the aspect is genuinely discussed but with no clear positive or negative evaluation.
-- ABSTAIN: the SAME aspect carries both positive and negative evaluation with neither clearly dominant.
+=== POLARITAS ===
+{", ".join(POLARITIES)}
+- POSITIVE: pengguna memuji / puas terhadap aspek itu.
+- NEGATIVE: pengguna mengeluh / tidak puas terhadap aspek itu.
+- NEUTRAL: aspek dibahas secara faktual/deskriptif tanpa evaluasi positif atau negatif yang jelas.
 
-An aspect that is not discussed at all is ABSENT, which is NOT the same as NEUTRAL. \
-Simply omit it from the output.
-
-=== CATEGORY BOUNDARIES (frequently confused) ===
+=== BATAS ANTAR-ASPEK (sering tertukar) ===
 {bnd}
 
-=== INCLUSION RULES ===
-- One review MAY yield more than one (aspect, polarity) pair.
-- IMPLICIT aspects are allowed when the category is clear from context; the aspect \
-need not appear as a literal word.
-- Short reviews are still labelled when the aspect information is clear.
-- Informal language, typos, abbreviations, slang and code-mixing are still labelled \
-as long as the meaning is recoverable.
-- An aspect mentioned factually with no clear evaluation gets NEUTRAL.
-- If the SAME aspect is both praised and criticised with neither dominant \
-("transfernya kadang cepat kadang gagal"), use ABSTAIN (X) rather than guessing. \
-This differs from two DIFFERENT aspects with different polarities, which are labelled normally.
+=== ATURAN INKLUSI ===
+- Satu review BOLEH memiliki lebih dari satu pasangan (aspek, polaritas).
+- Aspek IMPLISIT diperbolehkan selama kategorinya jelas dari konteks; aspek tidak harus muncul sebagai kata literal.
+- Review pendek tetap dilabeli jika informasi aspeknya jelas ("transfer gagal" -> valid).
+- Bahasa informal, typo, singkatan, slang, campur kode tetap dilabeli selama maknanya dapat dipahami.
+- Menyebut aspek tanpa evaluasi jelas -> polaritas NEUTRAL.
 
-=== EXCLUSION RULES ===
-If the review cannot be labelled, return a single exclusion code:
-- OS = OUT_OF_SCOPE: not about the target e-wallet, its service, features, or usage experience.
-- NS = NO_SPECIFIC_ASPECT: an opinion exists but none of the 8 categories can be \
-identified (e.g. "mantap", "bagus banget").
-- OO = OUT_OF_ONTOLOGY: a clear issue exists but cannot be defensibly mapped to the 8 categories.
-- IC = INSUFFICIENT_CONTEXT: too ambiguous to determine the category reliably.
-- UN = UNINTERPRETABLE: not semantically interpretable even after allowing for \
-typos, slang, abbreviations and code-mixing.
+=== ATURAN EKSKLUSI ===
+Bila review tidak dapat dilabeli: "labels": [] dan isi "exclusion" dengan SATU kode:
+- OUT_OF_SCOPE: tidak membahas e-wallet target / layanan / fitur / pengalaman penggunaannya.
+- NO_SPECIFIC_ASPECT: ada opini tetapi tidak ada satu pun dari 8 kategori yang teridentifikasi ("mantap", "bagus banget").
+- OUT_OF_ONTOLOGY: ada aspek jelas, tetapi tidak dapat dipetakan ke 8 kategori di atas.
+- INSUFFICIENT_CONTEXT: konteks terlalu ambigu untuk menentukan kategori secara andal.
+- UNINTERPRETABLE: teks tidak dapat diinterpretasikan secara semantik, bahkan setelah mempertimbangkan typo/slang/singkatan/campur kode.
+- SPAM_FAKE: jelas promosi/spam, tidak merepresentasikan pengalaman pengguna.
 
-Do not force a category that does not fit. OO or IC is better than a wrong label.
+Jangan memaksakan kategori yang tidak cocok. Lebih baik OO (out of ontology) atau IC (insufficient context) daripada label salah.
 
-=== OUTPUT FORMAT ===
-ONE LINE per review. No explanation, no JSON, no markdown, no reasoning.
+=== FORMAT OUTPUT ===
+SATU BARIS per review. Tanpa penjelasan, tanpa JSON, tanpa markdown.
 
-  <number> <ASPECT>:<POLARITY> <ASPECT>:<POLARITY> ...
-  <number> -<EXCLUSION_CODE>                        (when it cannot be labelled)
+  <nomor> <ASPEK>:<POLARITAS> <ASPEK>:<POLARITAS> ...
+  <nomor> -<KODE_EKSKLUSI>                        (bila tidak dapat dilabeli)
 
-Aspect codes:
+Kode aspek:
   SEC = Security                    ACC = Account Access & Registration
   FEA = Feature & Functionality     UIX = UI / UX
   CSV = Customer Service            FEE = Fees & Charges
   TRX = Transaction Performance     APP = App / Technical Performance
-Polarity codes:  P = Positive   N = Negative   U = Neutral   X = Abstain
-Exclusion codes: OS  NS  OO  IC  UN
-Extra flag:      SP = promotional/spam content. This is a FLAG, NOT a reason to \
-discard: still label the aspects if you can, and append SP at the end of the line.
+Kode polaritas:  P = Positive   N = Negative   U = Neutral
+                 X = ABSTAIN, HANYA bila aspek yang SAMA membawa evaluasi positif
+                     dan negatif sekaligus tanpa ada yang jelas dominan
+Kode eksklusi :  OS = out of scope   NS = no specific aspect   OO = out of ontology
+                 IC = insufficient context   UN = uninterpretable
+Flag tambahan :  SP = konten promosi/spam. Ini FLAG, BUKAN alasan pembuangan.
+                 Tetap labeli aspeknya bila bisa; tulis SP di akhir baris.
 
-Example lines:   3 TRX:N APP:N        7 -NS        9 TRX:X        12 FEA:P SP
+Contoh baris:   3 TRX:N APP:N        7 -NS        9 TRX:X        12 FEA:P SP
 
-=== EXAMPLES ===
+=== CONTOH ===
 {_fewshot_block()}"""
 
 
@@ -143,14 +125,14 @@ def build_batch(texts):
     numbered = "\n".join(f'{i}. "{t}"' for i, t in enumerate(texts, 1))
     return f"""{_rules()}
 
-=== ANNOTATE NOW ===
-Below are {n} reviews. Label EVERY review INDEPENDENTLY.
-Do not let the content of one review influence the label of another.
+=== ANOTASI SEKARANG ===
+Di bawah ini ada {n} review. Labeli SETIAP review secara INDEPENDEN.
+Jangan biarkan isi satu review mempengaruhi label review lain.
 
 {numbered}
 
-Output EXACTLY {n} lines, numbered 1 to {n}, one line per review.
-No explanation, no JSON, no markdown, no reasoning."""
+Keluarkan TEPAT {n} baris, urut dari 1 sampai {n}, satu baris per review.
+Tanpa penjelasan, tanpa JSON, tanpa markdown."""
 
 
 def build_single(text):

@@ -29,10 +29,20 @@ def call(prompt, a):
         "stream": False,
         "think": a.thinking,                 # matikan reasoning bila model mendukung
         "keep_alive": a.keep_alive,
+        # Tiap model Ollama membawa PARAMETER sendiri dari Modelfile-nya
+        # (top_k, top_p, repeat_penalty, ...). Menyetel temperature saja TIDAK
+        # membuat perbandingan apple-to-apple: repeat_penalty khususnya tetap
+        # mengubah output walau temperature 0. Semua dipatok eksplisit.
         "options": {
-            "temperature": 0,                # 1 pass -> greedy
-            "num_ctx": a.num_ctx,            # WAJIB: default Ollama terlalu kecil
+            "temperature": 0.0,        # greedy, satu pass (bukan self-consistency)
+            "top_p": 1.0,              # nonaktif
+            "top_k": 0,                # nonaktif
+            "repeat_penalty": 1.0,     # netral: 1.1 default sebagian model merusak
+            "repeat_last_n": 0,        # format kita memang repetitif; jangan dihukum
+            "seed": a.seed,            # determinisme & reproduktibilitas
+            "num_ctx": a.num_ctx,      # WAJIB: default Ollama memotong prompt diam-diam
             "num_predict": a.max_tokens,
+            "stop": [],                # buang stop token bawaan tiap Modelfile
         },
     }
     req = urllib.request.Request(
@@ -72,6 +82,7 @@ def main():
                     help="samakan dengan OLLAMA_NUM_PARALLEL di server")
     ap.add_argument("--num-ctx", type=int, default=6144)
     ap.add_argument("--max-tokens", type=int, default=0, help="0 = chunk*25+200")
+    ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--keep-alive", default="30m")
     ap.add_argument("--timeout", type=int, default=600)
     ap.add_argument("--max-retries", type=int, default=4)
@@ -101,7 +112,9 @@ def main():
     print(f"[{a.tag}] {len(units):,} unit -> {len(chunks):,} chunk @ {a.chunk} | "
           f"selesai {len(done):,} | sisa {len(todo):,}")
     print(f"  ollama: {a.model} @ {a.host} | num_ctx={a.num_ctx} "
-          f"num_predict={a.max_tokens} think={a.thinking} concurrency={a.concurrency}",
+          f"num_predict={a.max_tokens} think={a.thinking} concurrency={a.concurrency}")
+    print(f"  sampling DIPATOK SAMA untuk semua model: temperature=0.0 top_p=1.0 "
+          f"top_k=0 repeat_penalty=1.0 repeat_last_n=0 seed={a.seed} stop=[]",
           flush=True)
     if not todo:
         print("  sudah lengkap."); return
@@ -149,7 +162,11 @@ def main():
                     "method": "LLM", "provider": "ollama", "model_name": a.model,
                     "model_tag": a.tag, "prompt_version": PROMPT_VERSION,
                     "wire_format": a.format, "chunk_size": a.chunk,
-                    "temperature": 0, "parser_valid": not bad, "annotated_at": ts,
+                    "temperature": 0.0, "top_p": 1.0, "top_k": 0,
+                    "repeat_penalty": 1.0, "seed": a.seed,
+                    "num_ctx": a.num_ctx, "num_predict": a.max_tokens,
+                    "think": a.thinking,
+                    "parser_valid": not bad, "annotated_at": ts,
                 }, ensure_ascii=False))
                 st["unit"] += 1
         fh.write("\n".join(lines) + "\n"); fh.flush(); os.fsync(fh.fileno())

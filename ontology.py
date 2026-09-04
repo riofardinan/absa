@@ -144,3 +144,51 @@ POLARITY_DISPLAY = {"POSITIVE": "Positive", "NEGATIVE": "Negative",
                     "NEUTRAL": "Neutral", ABSTAIN: "Abstain"}
 
 PROMPT_VERSION = "absa_v1"
+
+
+# ------------------------------------------------- definisi versi Inggris (v2)
+# Prompt memakai instruksi Inggris atas data Indonesia; lihat docstring _rules()
+# di prompt.py untuk dasar rujukannya (Hellwig et al., ESWA 2024 / LREC 2026).
+ASPECT_DEF_EN = {
+    "SECURITY":
+        "Safety of funds and personal data: fraud, scams, hacked or compromised "
+        "accounts, unauthorised transactions, data leaks, financial loss from cybercrime.",
+    "ACCOUNT_ACCESS_REGISTRATION":
+        "Account access: login, logout, registration, OTP, PIN, identity verification, "
+        "username, password, email, phone number, blocked or frozen accounts.",
+    "FEATURE_FUNCTIONALITY":
+        "Availability, completeness and functioning of features, menus and services: "
+        "PayLater, loans, QRIS as a feature, vouchers, promos as a feature, features "
+        "removed after an update.",
+    "UI_UX":
+        "Appearance and ease of use: visual design, layout, navigation, scrolling, "
+        "buttons, icons, ease or difficulty of finding things, ads that disrupt the interface.",
+    "CUSTOMER_SERVICE":
+        "Customer support: CS responsiveness, call centre, help centre, complaints, "
+        "follow-up on issues, support chatbots.",
+    "FEES_CHARGES":
+        "Costs and deductions: admin fees, transfer fees, service charges, balance "
+        "deducted as a fee, interest, penalties, pricing.",
+    "TRANSACTION_PERFORMANCE":
+        "Execution of transactions: transfers, top-ups, payments, bills, QRIS as a "
+        "transaction, sending money, pending/failed/successful status, funds not "
+        "arriving, balance deducted while the transaction failed, transaction speed.",
+    "APP_TECHNICAL_PERFORMANCE":
+        "Technical performance of the app: errors, crashes, force close, slowness, lag, "
+        "long loading, maintenance, server outages, connectivity, memory usage, bugs, "
+        "failed updates.",
+}
+
+BOUNDARIES_EN = [
+    "A transfer menu that is hard to FIND -> UI_UX, not FEATURE_FUNCTIONALITY.",
+    "A FAILED transaction with no technical cause mentioned -> TRANSACTION_PERFORMANCE "
+    "only; do not add APP_TECHNICAL_PERFORMANCE.",
+    "App fails to open because of the server -> APP_TECHNICAL_PERFORMANCE, not SECURITY.",
+    "Cannot log in -> ACCOUNT_ACCESS_REGISTRATION. Add SECURITY only when there is a "
+    "sign of fraud, account takeover or hacking.",
+    "Balance deducted as a FEE -> FEES_CHARGES. Balance deducted while the transaction "
+    "FAILED -> TRANSACTION_PERFORMANCE.",
+    "A failed transaction with no mention of support -> do not assign CUSTOMER_SERVICE.",
+    "A feature that is unavailable or missing -> FEATURE_FUNCTIONALITY. A feature that "
+    "exists but errors technically -> APP_TECHNICAL_PERFORMANCE.",
+]
