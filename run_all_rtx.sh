@@ -4,12 +4,23 @@
 # dibandingkan langsung oleh agreement.py.
 #
 # Setup (di dalam WSL2, bukan Windows native):
-#   python3 -m venv .venv && source .venv/bin/activate
+#   "$PY" -m venv .venv && source .venv/bin/activate
 #   pip install -U pip
 #   pip install vllm==0.28.0        # menarik torch 2.13.x sendiri; JANGAN pasang torch duluan
-#   python3 -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_capability())"
+#   "$PY" -c "import torch;print(torch.__version__, torch.version.cuda, torch.cuda.get_device_capability())"
 #   # harus mencetak (12, 0) untuk RTX 5070
 set -uo pipefail
+
+# Windows/Git Bash memakai `python`, bukan `python3` (yang malah tertangkap alias
+# Microsoft Store). Deteksi interpreter yang benar-benar bisa dijalankan.
+PY=""
+for c in python3 python py; do
+  if command -v "$c" >/dev/null 2>&1 && "$c" -c "import sys" >/dev/null 2>&1; then
+    PY="$c"; break
+  fi
+done
+[ -n "$PY" ] || { echo "!! Python tidak ditemukan (coba python3/python/py)"; exit 1; }
+echo "python: $PY ($($PY -V 2>&1))"
 
 CHUNK=${CHUNK:-25}
 MML=${MML:-4608}
@@ -37,7 +48,7 @@ for entry in "${MODELS[@]}"; do
   echo "[$(date +%H:%M:%S)] $TAG  <-  $MID"
 
   # shellcheck disable=SC2086
-  python3 annotate_offline.py --tag "$TAG" --model "$MID" \
+  "$PY" annotate_offline.py --tag "$TAG" --model "$MID" \
       --chunk "$CHUNK" --max-model-len "$MML" --wave "$WAVE" \
       ${GU:+--gpu-util "$GU"} $EXTRA \
     || { echo "  !! $TAG GAGAL — lanjut ke model berikutnya"; continue; }
@@ -48,10 +59,10 @@ done
 echo "=============================================================="
 for entry in "${MODELS[@]}"; do
   TAG="${entry%%|*}"
-  [ -s "ann_${TAG}.jsonl" ] && python3 export.py --tag "$TAG" --csv "$CSV"
+  [ -s "ann_${TAG}.jsonl" ] && "$PY" export.py --tag "$TAG" --csv "$CSV"
 done
 
 echo "=============================================================="
 echo "### Cohort RTX (3 model generasi 2025-2026, 3-4B)"
-python3 agreement.py ann_qwen35.jsonl ann_nemotron.jsonl ann_gemma4.jsonl \
+"$PY" agreement.py ann_qwen35.jsonl ann_nemotron.jsonl ann_gemma4.jsonl \
   | tee agreement_rtx.txt
